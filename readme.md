@@ -1,0 +1,1 @@
+This a personalized gameplay assistant for Black Myth Wukong.
