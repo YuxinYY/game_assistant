@@ -1,0 +1,23 @@
+{
+  "boss_name": "虎先锋",
+  "url": "https://wiki.biligame.com/wukong/虎先锋",
+  "source": "bwiki",
+  "moves": [
+    {
+      "name": "虎跃斩",
+      "description": "虎先锋起身跃起，落地时挥爪劈下，带有三段攻击。第三段蓄力时间约1秒，落点面积较大。",
+      "phase": 1
+    },
+    {
+      "name": "猛虎扑击",
+      "description": "向玩家方向冲刺扑击，可连击两次。",
+      "phase": 1
+    },
+    {
+      "name": "震地怒吼",
+      "description": "第二阶段专属，原地嚎叫产生范围震击，向外扩散。",
+      "phase": 2
+    }
+  ],
+  "tips": "进入第二阶段后虎先锋会获得护甲加成，建议优先清除小兵。"
+}

@@ -1,0 +1,32 @@
+# LLM
+anthropic>=0.25.0
+
+# Vector store
+chromadb>=0.5.0
+
+# Sparse retrieval
+rank-bm25>=0.2.2
+
+# Data collection
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+
+# Data processing
+pandas>=2.0.0
+numpy>=1.26.0
+tqdm>=4.66.0
+
+# Config
+pyyaml>=6.0.1
+python-dotenv>=1.0.0
+
+# Frontend
+streamlit>=1.35.0
+Pillow>=10.0.0
+
+# Evaluation
+rouge-score>=0.1.2
+
+# Testing
+pytest>=8.0.0

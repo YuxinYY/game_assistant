@@ -1,0 +1,35 @@
+llm:
+  model: claude-sonnet-4-7
+  temperature: 0.3
+  max_tokens: 2048
+
+retrieval:
+  dense_top_k: 20
+  sparse_top_k: 20
+  rerank_top_k: 5
+  chroma_collection: wukong_chunks
+  chroma_persist_dir: data/indexes/chroma_db
+  bm25_index_path: data/indexes/bm25_index.pkl
+
+agents:
+  max_react_iterations: 3
+
+spoiler:
+  enable: true
+
+cache:
+  enable: true
+  ttl_seconds: 3600
+  backend: memory   # "memory" | "redis"
+
+data:
+  chunks_path: data/processed/chunks.jsonl
+  raw_wiki_dir: data/raw/wiki
+  raw_nga_dir: data/raw/nga
+  raw_bilibili_dir: data/raw/bilibili
+  raw_reddit_dir: data/raw/reddit
+
+logging:
+  level: INFO
+  trace_to_file: false
+  trace_path: logs/trace.jsonl
