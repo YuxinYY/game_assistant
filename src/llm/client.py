@@ -3,9 +3,15 @@ Unified LLM client. All agents go through here so retry, tracing,
 and token accounting are handled in one place.
 """
 
+import base64
+import json
 import os
-import anthropic
 from typing import Any
+
+try:
+    import anthropic
+except ImportError:  # pragma: no cover - depends on local environment
+    anthropic = None
 
 
 class LLMClient:
@@ -13,10 +19,13 @@ class LLMClient:
         self.model = config["llm"]["model"]
         self.temperature = config["llm"]["temperature"]
         self.max_tokens = config["llm"].get("max_tokens", 2048)
-        self._client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
+        self._client = None
+        if anthropic is not None:
+            self._client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
 
     def complete(self, messages: list[dict], system: str = "") -> str:
         """Single chat completion. Returns response text."""
+        self._require_client()
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
@@ -38,6 +47,7 @@ class LLMClient:
         Returns (stop_reason, tool_name, tool_input).
         stop_reason is "tool_use" or "end_turn".
         """
+        self._require_client()
         response = self._client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
@@ -50,3 +60,60 @@ class LLMClient:
             return "tool_use", tool_block.name, tool_block.input
         text = next((b.text for b in response.content if hasattr(b, "text")), "")
         return "end_turn", None, None
+
+    def vision_json(
+        self,
+        image_bytes: bytes,
+        prompt: str,
+        model: str | None = None,
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        self._require_client()
+        encoded = base64.standard_b64encode(image_bytes).decode()
+        response = self._client.messages.create(
+            model=model or self.model,
+            max_tokens=max_tokens or self.max_tokens,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": encoded,
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+        )
+        text = next((b.text for b in response.content if hasattr(b, "text")), "")
+        return self._extract_json_object(text)
+
+    @staticmethod
+    def _extract_json_object(text: str) -> dict[str, Any]:
+        text = text.strip()
+        if not text:
+            return {}
+        try:
+            payload = json.loads(text)
+            return payload if isinstance(payload, dict) else {}
+        except json.JSONDecodeError:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start == -1 or end == -1 or start >= end:
+                return {}
+            try:
+                payload = json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                return {}
+            return payload if isinstance(payload, dict) else {}
+
+    def _require_client(self) -> None:
+        if self._client is None:
+            raise RuntimeError(
+                "Anthropic client is unavailable. Install the 'anthropic' package and set ANTHROPIC_API_KEY."
+            )

@@ -44,13 +44,18 @@ class PlayerProfile:
     chapter: int = 1
     build: str = "dodge"   # "dodge" | "parry" | "spell" | "hybrid"
     staff_level: int = 1
+    equipped_spirit: Optional[str] = None
+    equipped_armor: List[str] = field(default_factory=list)
+    equipped_spells: List[str] = field(default_factory=list)
     unlocked_skills: List[str] = field(default_factory=list)
     unlocked_spells: List[str] = field(default_factory=list)
     unlocked_transformations: List[str] = field(default_factory=list)
 
     def to_context_string(self) -> str:
+        spirit = self.equipped_spirit or "无"
         return (
             f"章节: 第{self.chapter}章 | 流派: {self.build} | 棍法: Lv.{self.staff_level} | "
+            f"精魄: {spirit} | 披挂: {self.equipped_armor or '无'} | 装备法术: {self.equipped_spells or '无'} | "
             f"技能: {self.unlocked_skills or '无'} | "
             f"法术: {self.unlocked_spells or '无'} | "
             f"变身: {self.unlocked_transformations or '无'}"
@@ -66,6 +71,7 @@ class AgentState:
     # Input
     user_query: str
     user_screenshot: Optional[bytes] = None
+    user_screenshots: List[bytes] = field(default_factory=list)
 
     # User context
     player_profile: PlayerProfile = field(default_factory=PlayerProfile)
@@ -81,6 +87,12 @@ class AgentState:
     # Output
     final_answer: Optional[str] = None
     citations: List[Citation] = field(default_factory=list)
+    profile_updates: List[Dict[str, Any]] = field(default_factory=list)
 
     # Debug / tracing
     trace: List[TraceEvent] = field(default_factory=list)
+
+    def screenshots(self) -> List[bytes]:
+        if self.user_screenshots:
+            return self.user_screenshots
+        return [self.user_screenshot] if self.user_screenshot else []

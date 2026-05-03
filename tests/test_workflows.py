@@ -45,3 +45,7 @@ class TestWorkflows:
     def test_boss_strategy_has_five_agents(self):
         workflows = build_workflows()
         assert len(workflows["boss_strategy"]) == 5
+
+    def test_boss_strategy_starts_with_profile_agent(self):
+        workflows = build_workflows()
+        assert workflows["boss_strategy"][0].__name__ == "ProfileAgent"

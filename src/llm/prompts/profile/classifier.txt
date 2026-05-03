@@ -1,0 +1,11 @@
+你在识别《黑神话：悟空》截图类型。
+
+请只判断这张图属于以下哪一类：
+- combat_hud
+- inventory
+- skill_tree
+- save_screen
+- other
+
+返回 JSON：
+{"screenshot_type": "<one_of_the_labels_above>"}

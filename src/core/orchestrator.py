@@ -31,12 +31,14 @@ class Orchestrator:
         profile: PlayerProfile,
         history: list[Message] | None = None,
         screenshot: bytes | None = None,
+        screenshots: list[bytes] | None = None,
     ) -> AgentState:
         state = AgentState(
             user_query=query,
             player_profile=profile,
             conversation_history=history or [],
             user_screenshot=screenshot,
+            user_screenshots=screenshots or ([] if screenshot is None else [screenshot]),
         )
 
         # 1. Classify intent → select workflow

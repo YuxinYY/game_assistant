@@ -23,10 +23,10 @@ def build_workflows() -> dict[str, list]:
     WikiAgent, CommunityAgent, ProfileAgent, AnalysisAgent, SynthesisAgent = _get_agents()
     return {
         "boss_strategy": [
+            ProfileAgent,     # update player state before downstream retrieval/personalization
             WikiAgent,        # identify move name from wiki
             CommunityAgent,   # find player counter-strategies
             AnalysisAgent,    # consensus + conflict detection
-            ProfileAgent,     # personalize / filter by player state
             SynthesisAgent,   # write final cited answer
         ],
         "decision_making": [

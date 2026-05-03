@@ -1,0 +1,21 @@
+你在解析《黑神话：悟空》的战斗 HUD 截图，用于更新玩家画像。
+
+尽量识别这些字段；看不清就返回 null 或空数组，不要猜：
+- chapter: 1-6
+- build: dodge / parry / spell / hybrid
+- staff_level: 1-5
+- equipped_spirit: 当前精魄
+- equipped_spells: 当前装配法术列表
+- unlocked_transformations: HUD 上能明确看到的变身
+- confidence: 0-1
+
+只返回 JSON：
+{
+  "chapter": 1,
+  "build": "dodge",
+  "staff_level": 1,
+  "equipped_spirit": null,
+  "equipped_spells": [],
+  "unlocked_transformations": [],
+  "confidence": 0.0
+}

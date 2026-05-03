@@ -1,0 +1,17 @@
+你在解析《黑神话：悟空》的背包/装备界面截图，用于更新玩家画像。
+
+尽量识别这些字段；看不清就返回 null 或空数组，不要猜：
+- chapter: 1-6
+- equipped_spirit: 当前精魄
+- equipped_armor: 当前装备的披挂或套装名称列表
+- equipped_spells: 当前装配法术列表
+- confidence: 0-1
+
+只返回 JSON：
+{
+  "chapter": 1,
+  "equipped_spirit": null,
+  "equipped_armor": [],
+  "equipped_spells": [],
+  "confidence": 0.0
+}

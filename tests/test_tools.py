@@ -5,6 +5,7 @@ Unit tests for tools (pure functions — no LLM, no network).
 import pytest
 from src.core.state import Document
 from src.tools.consensus import count_source_consensus, detect_conflicts
+from src.tools.profile_ops import merge_to_profile, validate_extraction
 from src.tools.spoiler_filter import apply_spoiler_filter
 
 
@@ -52,3 +53,34 @@ class TestSpoilerFilter:
         docs = [make_doc("虎先锋打法", chapter=1)]
         filtered = apply_spoiler_filter(docs, max_chapter=1)
         assert len(filtered) == 1
+
+
+class TestProfileOps:
+    def test_validate_drops_unknown_items(self):
+        validated = validate_extraction(
+            {
+                "chapter": 9,
+                "equipped_spirit": "未知精魄",
+                "unlocked_spells": ["定身术", "空气法术"],
+            },
+            {
+                "all_spells": ["定身术"],
+                "all_spirits": ["广智"],
+                "all_armors": [],
+                "all_skills_tree": [],
+            },
+        )
+        assert "chapter" not in validated
+        assert "equipped_spirit" not in validated
+        assert validated["unlocked_spells"] == ["定身术"]
+
+    def test_merge_unions_unlock_lists(self):
+        from src.core.state import PlayerProfile
+
+        profile = PlayerProfile(unlocked_skills=["闪身"])
+        merged_profile, updates = merge_to_profile(
+            {"unlocked_skills": ["闪身", "识破"]},
+            profile,
+        )
+        assert merged_profile.unlocked_skills == ["闪身", "识破"]
+        assert updates[0]["field"] == "unlocked_skills"

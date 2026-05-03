@@ -1,0 +1,19 @@
+你在解析《黑神话：悟空》的技能树截图，用于更新玩家画像。
+
+尽量识别这些字段；看不清就返回 null 或空数组，不要猜：
+- chapter: 1-6
+- build: dodge / parry / spell / hybrid
+- staff_level: 1-5
+- unlocked_skills: 已点亮技能
+- unlocked_spells: 已解锁法术
+- confidence: 0-1
+
+只返回 JSON：
+{
+  "chapter": 1,
+  "build": "dodge",
+  "staff_level": 1,
+  "unlocked_skills": [],
+  "unlocked_spells": [],
+  "confidence": 0.0
+}
