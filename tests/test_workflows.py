@@ -33,6 +33,33 @@ class TestRouter:
         state = make_state("广智在哪里？")
         assert self.router.route(state) == "navigation"
 
+    def test_llm_route_uses_valid_model_output(self):
+        class FakeLLM:
+            def complete(self, messages, system=""):
+                return "decision_making"
+
+        router = Router(DUMMY_CONFIG, llm_client=FakeLLM())
+        state = make_state("闪身流和棍反流哪个好？")
+        assert router.route(state) == "decision_making"
+
+    def test_llm_route_parses_json_output(self):
+        class FakeLLM:
+            def complete(self, messages, system=""):
+                return '{"workflow": "navigation"}'
+
+        router = Router(DUMMY_CONFIG, llm_client=FakeLLM())
+        state = make_state("广智在哪里？")
+        assert router.route(state) == "navigation"
+
+    def test_llm_path_falls_back_to_heuristic_during_mvp_stage(self):
+        class FakeLLM:
+            def complete(self, messages, system=""):
+                raise RuntimeError("API unavailable")
+
+        router = Router(DUMMY_CONFIG, llm_client=FakeLLM())
+        state = make_state("虎先锋那个招怎么躲？")
+        assert router.route(state) == "boss_strategy"
+
 
 class TestWorkflows:
     def test_all_workflows_defined(self):

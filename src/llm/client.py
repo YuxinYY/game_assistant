@@ -13,9 +13,16 @@ try:
 except ImportError:  # pragma: no cover - depends on local environment
     anthropic = None
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - depends on local environment
+    load_dotenv = None
+
 
 class LLMClient:
     def __init__(self, config: dict):
+        if load_dotenv is not None:
+            load_dotenv()
         self.model = config["llm"]["model"]
         self.temperature = config["llm"]["temperature"]
         self.max_tokens = config["llm"].get("max_tokens", 2048)

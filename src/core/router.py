@@ -3,6 +3,9 @@ Intent classification: maps a user query to a named workflow.
 Uses a single cheap LLM call with a structured prompt.
 """
 
+import json
+import re
+
 from src.core.state import AgentState
 
 INTENT_CATEGORIES = {
@@ -19,14 +22,29 @@ class Router:
         self.llm = llm_client  # injected to avoid circular import
 
     def route(self, state: AgentState) -> str:
-        """Classify query intent with one LLM call; return workflow name."""
-        if self.llm is None:
-            return self._heuristic_route(state.user_query)
-        # TODO: implement LLM-based classification
-        # prompt = self._build_routing_prompt(state.user_query)
-        # response = self.llm.complete([{"role": "user", "content": prompt}])
-        # return self._parse_intent(response)
-        raise NotImplementedError
+        """Classify query intent and fall back to heuristics until LLM routing is ready."""
+        query = state.user_query
+        if self.llm is not None:
+            try:
+                return self._llm_route(query)
+            except NotImplementedError:
+                pass
+            except Exception:
+                pass
+        return self._heuristic_route(query)
+
+    def _llm_route(self, query: str) -> str:
+        prompt = self._build_routing_prompt(query)
+        response = self.llm.complete(
+            [{"role": "user", "content": prompt}],
+            system=(
+                "你是一个游戏问题意图分类器。"
+                "你只能返回以下四个类别之一："
+                "boss_strategy, decision_making, navigation, fact_lookup。"
+                "不要解释，不要补充文字。"
+            ),
+        )
+        return self._parse_intent(response)
 
     def _heuristic_route(self, query: str) -> str:
         """Keyword fallback used during development."""
@@ -48,3 +66,26 @@ class Router:
             f"类别:\n{categories}\n\n"
             f"问题: {query}"
         )
+
+    def _parse_intent(self, response: str) -> str:
+        cleaned = response.strip().strip("`")
+        if cleaned in INTENT_CATEGORIES:
+            return cleaned
+
+        try:
+            payload = json.loads(cleaned)
+        except json.JSONDecodeError:
+            payload = None
+
+        if isinstance(payload, dict):
+            for key in ("workflow", "intent", "category"):
+                value = payload.get(key)
+                if value in INTENT_CATEGORIES:
+                    return value
+
+        pattern = "|".join(re.escape(intent) for intent in INTENT_CATEGORIES)
+        match = re.search(pattern, cleaned)
+        if match:
+            return match.group(0)
+
+        raise ValueError(f"Unrecognized routing response: {response!r}")
