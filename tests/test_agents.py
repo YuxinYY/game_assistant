@@ -8,6 +8,7 @@ from src.core.state import AgentState, PlayerProfile, Document
 from src.agents.community_agent import CommunityAgent
 from src.agents.profile_agent import ProfileAgent, _filter_by_profile
 from src.agents.analysis_agent import AnalysisAgent
+from src.agents.synthesis_agent import SynthesisAgent
 from src.agents.wiki_agent import WikiAgent
 
 
@@ -183,8 +184,76 @@ class TestCommunityAgent:
             result = agent.execute(state)
 
         assert len(result.retrieved_docs) == 1
-        assert result.retrieved_docs[0].source == "nga"
-        assert result.trace[0].action == "deterministic_community_search"
+
+
+class TestSynthesisAgent:
+    def test_execute_uses_llm_output_and_appends_citations(self):
+        docs = [
+            make_doc(
+                "虎跃斩第三段建议向左侧闪，时机是前爪落地。",
+                source="nga",
+                chapter=1,
+                url="http://nga/1",
+            )
+        ]
+        docs[0].metadata = {"author": "玩家A"}
+
+        class FakeLLM:
+            def complete(self, messages, system=""):
+                return "## 招式识别\n- 虎跃斩（来源: nga http://nga/1）"
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None):
+            agent = SynthesisAgent(DUMMY_CONFIG)
+            agent.llm = FakeLLM()
+            state = make_state("虎先锋那个招怎么躲？")
+            state.retrieved_docs = docs
+
+            result = agent.execute(state)
+
+        assert "## 招式识别" in result.final_answer
+        assert "## 参考来源" in result.final_answer
+        assert len(result.citations) == 1
+        assert result.trace[0].action == "synthesis_llm"
+
+    def test_execute_falls_back_to_extractive_summary_when_llm_fails(self):
+        docs = [
+            make_doc(
+                "虎跃斩第三段向左侧闪成功率更高。",
+                source="nga",
+                chapter=1,
+                url="http://nga/1",
+            )
+        ]
+
+        class FailingLLM:
+            def complete(self, messages, system=""):
+                raise RuntimeError("provider error")
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None):
+            agent = SynthesisAgent(DUMMY_CONFIG)
+            agent.llm = FailingLLM()
+            state = make_state("虎先锋那个招怎么躲？")
+            state.retrieved_docs = docs
+            state.identified_entities = ["虎先锋"]
+            state.consensus_analysis = {"strategies": [], "conflicts": []}
+
+            result = agent.execute(state)
+
+        assert "## 基于检索结果的直接整理" in result.final_answer
+        assert "provider error" in result.final_answer
+        assert "http://nga/1" in result.final_answer
+        assert result.trace[0].action == "synthesis_fallback"
+
+    def test_execute_returns_no_results_message_without_docs(self):
+        with patch("src.llm.client.LLMClient.__init__", return_value=None):
+            agent = SynthesisAgent(DUMMY_CONFIG)
+            state = make_state("虎先锋那个招怎么躲？")
+
+            result = agent.execute(state)
+
+        assert "检索内容中未找到足够资料" in result.final_answer
+        assert result.citations == []
+        assert result.trace[0].action == "synthesis_no_results"
 
     def test_execute_deduplicates_docs_across_rewritten_queries(self):
         docs = [

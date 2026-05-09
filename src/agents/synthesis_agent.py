@@ -6,7 +6,6 @@ unsupported claims must be admitted as "不确定".
 
 from src.agents.base_agent import BaseAgent, Tool
 from src.core.state import AgentState, Citation
-from src.tools.spoiler_filter import apply_spoiler_filter
 
 
 class SynthesisAgent(BaseAgent):
@@ -17,15 +16,25 @@ class SynthesisAgent(BaseAgent):
         return []  # synthesis is a single LLM call, no tool loop needed
 
     def execute(self, state: AgentState) -> AgentState:
+        state.citations = _extract_citations(state.retrieved_docs)
+        if not state.retrieved_docs:
+            state.final_answer = _build_no_results_answer(state)
+            self._trace(state, 0, "synthesis_no_results", "No retrieved docs available for synthesis.")
+            return state
+
         prompt = self._load_prompt()
         context = _build_synthesis_context(state)
         messages = [{"role": "user", "content": context}]
 
-        # TODO: call self.llm.complete(messages, system=prompt)
-        # state.final_answer = self.llm.complete(messages, system=prompt)
-        state.final_answer = "[TODO: synthesis LLM call not yet implemented]"
-
-        state.citations = _extract_citations(state.retrieved_docs)
+        try:
+            answer = self.llm.complete(messages, system=prompt).strip()
+            if not answer:
+                raise ValueError("LLM returned an empty synthesis response")
+            state.final_answer = _append_citation_block(answer, state.citations)
+            self._trace(state, 0, "synthesis_llm", f"Generated answer from {len(state.retrieved_docs)} docs.")
+        except Exception as exc:
+            state.final_answer = _build_extract_fallback_answer(state, error=str(exc))
+            self._trace(state, 0, "synthesis_fallback", str(exc))
         return state
 
 
@@ -70,3 +79,79 @@ def _extract_citations(docs) -> list[Citation]:
                 author=doc.metadata.get("author", ""),
             ))
     return citations
+
+
+def _build_no_results_answer(state: AgentState) -> str:
+    return (
+        "## 当前结果\n"
+        "- 检索内容中未找到足够资料，暂时无法生成有依据的攻略回答。\n\n"
+        "## 你的问题\n"
+        f"- {state.user_query}\n\n"
+        "## 建议\n"
+        "- 请先补充更明确的 boss、招式、地点或当前章节信息后再试。"
+    )
+
+
+def _build_extract_fallback_answer(state: AgentState, error: str = "") -> str:
+    sections = ["## 基于检索结果的直接整理"]
+
+    entities = state.identified_entities or [doc.entity for doc in state.retrieved_docs if doc.entity]
+    unique_entities = []
+    for entity in entities:
+        if entity and entity not in unique_entities:
+            unique_entities.append(entity)
+    if unique_entities:
+        sections.append(f"- 当前检索主要围绕：{'、'.join(unique_entities)}。")
+
+    sections.append("\n## 针对你的 build 的建议")
+    for doc in state.retrieved_docs[:3]:
+        sections.append(f"- {_to_brief_evidence(doc.text)}（来源: {doc.source} {doc.url}）")
+
+    sections.append("\n## 共识度")
+    consensus_text = _build_consensus_lines(state)
+    sections.extend(consensus_text or ["- 当前检索样本较少，无法得出稳定共识。"])
+
+    sections.append("\n## 系统不确定的地方")
+    if error:
+        sections.append(f"- 本次使用了非 LLM 降级整理，因为生成阶段失败：{error}")
+    conflicts = (state.consensus_analysis or {}).get("conflicts", [])
+    if conflicts:
+        for conflict in conflicts:
+            sections.append(
+                f"- {conflict['topic']} 存在争议：支持 {len(conflict['pro'])} 条，反对 {len(conflict['con'])} 条。"
+            )
+    else:
+        sections.append("- 当前主要不确定性来自样本规模较小，后续补充更多来源会更稳。")
+
+    return _append_citation_block("\n".join(sections), _extract_citations(state.retrieved_docs))
+
+
+def _build_consensus_lines(state: AgentState) -> list[str]:
+    analysis = state.consensus_analysis or {}
+    strategies = analysis.get("strategies", [])
+    lines = []
+    for strategy in strategies[:5]:
+        line = f"- {strategy['label']}: {strategy['source_count']} 个来源支持"
+        if strategy.get("is_contested"):
+            line += " ⚠️ 存在争议"
+        lines.append(line)
+    return lines
+
+
+def _append_citation_block(answer: str, citations: list[Citation]) -> str:
+    if not citations:
+        return answer
+    citation_lines = ["\n## 参考来源"]
+    for index, citation in enumerate(citations, start=1):
+        author_suffix = f" | 作者: {citation.author}" if citation.author else ""
+        citation_lines.append(
+            f"- [{index}] {citation.source} | {citation.url}{author_suffix}"
+        )
+    return answer.rstrip() + "\n\n" + "\n".join(citation_lines)
+
+
+def _to_brief_evidence(text: str, max_chars: int = 70) -> str:
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[: max_chars - 1] + "…"

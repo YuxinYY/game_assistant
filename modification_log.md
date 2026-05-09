@@ -22,8 +22,8 @@
 | 2 | Implement real LLM Router with robust parsing and fallback | src/core/router.py, src/llm/client.py, tests/test_workflows.py | pytest tests/test_workflows.py -q | Done |
 | 3 | Disable BM25 runtime failure so retrieval can degrade to dense-only mode | src/retrieval/hybrid_retriever.py, scripts/build_indexes.py, scripts/chunk_and_clean.py, tests/test_retrieval.py, tests/test_data_pipeline.py | targeted retriever unit test + sample index rebuild | Done |
 | 4 | Replace ReAct-dependent WikiAgent and CommunityAgent execution with deterministic retrieval that updates AgentState | src/agents/wiki_agent.py, src/agents/community_agent.py, scripts/chunk_and_clean.py, tests/test_agents.py, tests/test_data_pipeline.py | targeted agent tests + sample rebuild + orchestrator smoke test | Done |
-| 5 | Make SynthesisAgent produce a real answer with safe fallback and visible citations | src/agents/synthesis_agent.py, tests/test_agents.py | targeted synthesis tests | Planned |
-| 6 | Add one MVP smoke test for the minimal text-query pipeline | tests/ | patched end-to-end smoke test | Planned |
+| 5 | Make SynthesisAgent produce a real answer with safe fallback and visible citations | src/agents/synthesis_agent.py, tests/test_agents.py | targeted synthesis tests + orchestrator smoke test | Done |
+| 6 | Add one MVP smoke test for the minimal text-query pipeline | tests/test_mvp_smoke.py | patched end-to-end smoke test | Done |
 | 7 | Revisit ReAct `_decide()`, tool-use compatibility, BM25 quality, and query rewrite after MVP stability | multiple files | phased tests | Planned |
 
 ## Change Entries
@@ -149,3 +149,38 @@
 - Result:
   - A normal text query now passes Router, ProfileAgent, WikiAgent, CommunityAgent, and AnalysisAgent without hitting `BaseAgent._decide()`.
   - The current end-to-end blocker is no longer ReAct; it is only the placeholder synthesis output.
+
+### 2026-05-10 Step 5
+
+- Intent: replace the synthesis placeholder with real answer generation while keeping an evidence-based fallback.
+- Changes:
+  - Connected `SynthesisAgent.execute()` to `self.llm.complete(...)` using the existing synthesis prompt.
+  - Added a no-results branch so synthesis does not fabricate answers when retrieval returns nothing.
+  - Added an extractive fallback summary that is built only from retrieved documents and consensus analysis when LLM generation fails.
+  - Appended a visible citation block to the final answer so sources remain inspectable even when the model summary is brief.
+  - Added targeted synthesis tests for successful generation, fallback generation, and empty-result handling.
+- Files:
+  - src/agents/synthesis_agent.py
+  - tests/test_agents.py
+- Validation:
+  - pytest tests/test_agents.py tests/test_retrieval.py tests/test_data_pipeline.py -q
+  - 19 passed in 1.37s
+  - orchestrator smoke test now completes with a non-placeholder `final_answer`
+- Result:
+  - The text-query pipeline now reaches a real synthesis output instead of returning a TODO marker.
+  - If the LLM provider fails, the system still returns an evidence-based extractive summary rather than an empty or fabricated answer.
+
+### 2026-05-10 Step 6
+
+- Intent: lock the current MVP path with one automated text-query smoke test.
+- Changes:
+  - Added `tests/test_mvp_smoke.py` to validate that a normal text question can move through the MVP pipeline and produce a non-empty final answer plus citations.
+  - Stubbed retrieval and LLM calls inside the smoke test so it remains deterministic and does not depend on live external APIs.
+- Files:
+  - tests/test_mvp_smoke.py
+- Validation:
+  - pytest tests/test_agents.py tests/test_retrieval.py tests/test_data_pipeline.py tests/test_mvp_smoke.py -q
+  - 20 passed in 1.40s
+- Result:
+  - The current text-query MVP path is now covered by an automated smoke test.
+  - Future changes can be checked against a concrete regression target instead of relying only on manual runs.
