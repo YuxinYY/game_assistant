@@ -5,7 +5,7 @@ Singleton pattern so the index loads once per process.
 
 import pickle
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from src.core.state import Document
 
 _retriever_instance = None
@@ -27,6 +27,8 @@ class HybridRetriever:
         self.cfg = config["retrieval"]
         self._chroma = None
         self._bm25 = None
+        self._bm25_documents: list[dict[str, Any]] | None = None
+        self._bm25_loaded = False
 
     @property
     def chroma(self):
@@ -38,12 +40,15 @@ class HybridRetriever:
 
     @property
     def bm25(self):
-        if self._bm25 is None:
-            idx_path = Path(self.cfg["bm25_index_path"])
-            if idx_path.exists():
-                with open(idx_path, "rb") as f:
-                    self._bm25 = pickle.load(f)
+        if not self._bm25_loaded:
+            self._load_bm25()
         return self._bm25
+
+    @property
+    def bm25_documents(self) -> list[dict[str, Any]]:
+        if not self._bm25_loaded:
+            self._load_bm25()
+        return self._bm25_documents or []
 
     def search(
         self,
@@ -66,13 +71,42 @@ class HybridRetriever:
         return _chroma_results_to_docs(results)
 
     def _sparse_search(self, query: str, top_k: int, filters) -> list[Document]:
-        if self.bm25 is None:
+        if self.bm25 is None or not self.bm25_documents:
             return []
-        # TODO: apply filters post-retrieval for BM25
         tokens = query.split()
+        if not tokens:
+            return []
         scores = self.bm25.get_scores(tokens)
-        # TODO: map scores back to Document objects
-        raise NotImplementedError("BM25 search not fully implemented")
+        ranked = sorted(enumerate(scores), key=lambda item: item[1], reverse=True)
+
+        docs = []
+        for index, score in ranked:
+            if len(docs) >= top_k:
+                break
+            if index >= len(self.bm25_documents) or score <= 0:
+                continue
+            doc = _chunk_to_doc(self.bm25_documents[index])
+            if _doc_matches_filters(doc, filters):
+                docs.append(doc)
+        return docs
+
+    def _load_bm25(self) -> None:
+        self._bm25_loaded = True
+        idx_path = Path(self.cfg["bm25_index_path"])
+        if not idx_path.exists():
+            return
+
+        with open(idx_path, "rb") as f:
+            payload = pickle.load(f)
+
+        if isinstance(payload, dict):
+            self._bm25 = payload.get("bm25")
+            self._bm25_documents = payload.get("documents") or payload.get("chunks") or []
+            return
+
+        # Legacy format only contains the BM25 object, so sparse retrieval is disabled.
+        self._bm25 = payload
+        self._bm25_documents = []
 
 
 def _reciprocal_rank_fusion(
@@ -95,13 +129,46 @@ def _reciprocal_rank_fusion(
 
 
 def _build_chroma_where(filters: dict) -> dict | None:
-    where = {}
+    clauses = []
     for k, v in filters.items():
         if k == "chapter__lte":
-            where["chapter"] = {"$lte": v}
+            clauses.append({"chapter": {"$lte": v}})
         else:
-            where[k] = {"$eq": v}
-    return where if where else None
+            clauses.append({k: {"$eq": v}})
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}
+
+
+def _doc_matches_filters(doc: Document, filters: dict | None) -> bool:
+    if not filters:
+        return True
+    for key, value in filters.items():
+        if key == "chapter__lte":
+            if doc.chapter is None or doc.chapter > value:
+                return False
+            continue
+        field_value = getattr(doc, key, None)
+        if field_value is None and key in doc.metadata:
+            field_value = doc.metadata.get(key)
+        if field_value != value:
+            return False
+    return True
+
+
+def _chunk_to_doc(chunk: dict[str, Any]) -> Document:
+    return Document(
+        text=chunk.get("text", ""),
+        source=chunk.get("source", ""),
+        url=chunk.get("url", ""),
+        chapter=chunk.get("chapter"),
+        entity=chunk.get("entity"),
+        credibility=chunk.get("credibility", 0.8),
+        post_date=chunk.get("post_date"),
+        metadata=chunk.get("metadata", {}),
+    )
 
 
 def _chroma_results_to_docs(results: dict) -> list[Document]:
@@ -109,6 +176,7 @@ def _chroma_results_to_docs(results: dict) -> list[Document]:
     if not results or not results.get("documents"):
         return docs
     for text, meta in zip(results["documents"][0], results["metadatas"][0]):
+        payload_meta = _restore_chroma_metadata(meta)
         docs.append(Document(
             text=text,
             source=meta.get("source", ""),
@@ -117,6 +185,16 @@ def _chroma_results_to_docs(results: dict) -> list[Document]:
             entity=meta.get("entity"),
             credibility=meta.get("credibility", 0.8),
             post_date=meta.get("post_date"),
-            metadata=meta,
+            metadata=payload_meta,
         ))
     return docs
+
+
+def _restore_chroma_metadata(meta: dict[str, Any]) -> dict[str, Any]:
+    restored = {}
+    for key, value in meta.items():
+        if key.startswith("meta_"):
+            restored[key[5:]] = value
+        else:
+            restored[key] = value
+    return restored

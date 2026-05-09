@@ -13,7 +13,7 @@
 | --- | --- | --- | --- | --- |
 | 1 | Make Router fall back to heuristic routing so Orchestrator can start | src/core/router.py, tests/test_workflows.py | pytest tests/test_workflows.py -q | Done |
 | 2 | Implement real LLM Router with robust parsing and fallback | src/core/router.py, src/llm/client.py, tests/test_workflows.py | pytest tests/test_workflows.py -q | Done |
-| 3 | Disable BM25 runtime failure so retrieval can degrade to dense-only mode | src/retrieval/hybrid_retriever.py | targeted retriever unit test | Planned |
+| 3 | Disable BM25 runtime failure so retrieval can degrade to dense-only mode | src/retrieval/hybrid_retriever.py, scripts/build_indexes.py, scripts/chunk_and_clean.py, tests/test_retrieval.py, tests/test_data_pipeline.py | targeted retriever unit test + sample index rebuild | Done |
 | 4 | Bypass unfinished ReAct loop in WikiAgent and CommunityAgent with deterministic retrieval | src/agents/wiki_agent.py, src/agents/community_agent.py, tests/test_agents.py | targeted agent tests with mocked search | Planned |
 | 5 | Replace synthesis TODO output with real LLM call plus safe fallback | src/agents/synthesis_agent.py, tests/test_agents.py | targeted synthesis tests | Planned |
 | 6 | Add one MVP smoke test for the minimal pipeline | tests/ | patched end-to-end smoke test | Planned |
@@ -81,3 +81,39 @@
 - Result:
   - Router now works with a real Groq API key for text intent classification.
   - Live verification confirmed that the route result came from an actual model response, not only the heuristic fallback.
+
+### 2026-05-10 Step 3 Notes
+
+- While rebuilding sample indexes, the raw-to-chunks pipeline exposed a bug in `scripts/chunk_and_clean.py`.
+- Short texts could enter a non-progressing overlap loop and eventually raise `MemoryError`.
+- Fixed the chunker to stop at the end of text and always advance the sliding window.
+- Added targeted chunking tests before retrying the sample index rebuild.
+
+### 2026-05-10 Step 3
+
+- Intent: remove the next runtime blocker in retrieval without fabricating sparse results.
+- Changes:
+  - Implemented safe BM25 loading that supports the new `{bm25, documents}` index format.
+  - Disabled sparse retrieval automatically for legacy BM25 indexes that do not contain document mappings.
+  - Implemented real sparse document reconstruction and filtering when the new BM25 bundle is available.
+  - Updated Chroma filter building to support multiple conditions via `$and`.
+  - Updated index building to store BM25 together with original chunk documents.
+  - Fixed Chroma index build compatibility by flattening nested metadata and restoring it on retrieval.
+  - Fixed the chunking loop in `scripts/chunk_and_clean.py` so short texts no longer trigger a non-progressing overlap loop.
+- Files:
+  - src/retrieval/hybrid_retriever.py
+  - scripts/build_indexes.py
+  - scripts/chunk_and_clean.py
+  - tests/test_retrieval.py
+  - tests/test_data_pipeline.py
+- Validation:
+  - pytest tests/test_retrieval.py tests/test_data_pipeline.py -q
+  - 7 passed in 0.68s
+  - sample chunk rebuild succeeded: `data/processed/chunks.jsonl`
+  - sample index rebuild succeeded: `data/indexes/chroma_db`, `data/indexes/bm25_index.pkl`
+  - sample retrieval smoke test succeeded for NGA sample data without chapter filter
+- Result:
+  - Retrieval no longer crashes on the unfinished BM25 branch.
+  - New BM25 indexes can participate in real sparse retrieval.
+  - Existing or incomplete BM25 indexes degrade safely to dense-only retrieval.
+  - The sample dataset is now indexed and queryable, with the current limitation that the sample wiki file does not yet produce wiki chunks because it lacks a `raw_text` field.

@@ -26,6 +26,8 @@ CREDIBILITY = {
 def chunk_text(text: str, max_chars: int = MAX_CHUNK_CHARS, overlap: int = OVERLAP_CHARS) -> list[str]:
     """Sliding window chunker by character count. Splits on sentence boundaries when possible."""
     text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return []
     chunks = []
     start = 0
     while start < len(text):
@@ -35,7 +37,9 @@ def chunk_text(text: str, max_chars: int = MAX_CHUNK_CHARS, overlap: int = OVERL
         if break_pos > start + max_chars // 2:
             end = break_pos + 1
         chunks.append(text[start:end])
-        start = end - overlap
+        if end >= len(text):
+            break
+        start = max(end - overlap, start + 1)
     return chunks
 
 

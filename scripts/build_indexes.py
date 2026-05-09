@@ -29,13 +29,17 @@ def load_chunks() -> list[dict]:
 
 def build_chroma(chunks: list[dict]):
     client = chromadb.PersistentClient(path=CHROMA_DIR)
+    try:
+        client.delete_collection(name=COLLECTION_NAME)
+    except Exception:
+        pass
     collection = client.get_or_create_collection(COLLECTION_NAME)
 
     for i in range(0, len(chunks), BATCH_SIZE):
         batch = chunks[i:i + BATCH_SIZE]
         collection.add(
             documents=[c["text"] for c in batch],
-            metadatas=[{k: v for k, v in c.items() if k != "text" and v is not None} for c in batch],
+            metadatas=[_to_chroma_metadata(c) for c in batch],
             ids=[f"chunk_{i + j}" for j, _ in enumerate(batch)],
         )
         print(f"  chroma: {i + len(batch)}/{len(chunks)}")
@@ -44,11 +48,24 @@ def build_chroma(chunks: list[dict]):
 
 
 def build_bm25(chunks: list[dict]):
+    BM25_PATH.parent.mkdir(parents=True, exist_ok=True)
     tokenized = [c["text"].split() for c in chunks]
     bm25 = BM25Okapi(tokenized)
     with open(BM25_PATH, "wb") as f:
-        pickle.dump(bm25, f)
+        pickle.dump({"bm25": bm25, "documents": chunks}, f)
     print(f"BM25 index saved to {BM25_PATH}")
+
+
+def _to_chroma_metadata(chunk: dict) -> dict:
+    metadata = {
+        k: v
+        for k, v in chunk.items()
+        if k not in {"text", "metadata"} and v is not None
+    }
+    for key, value in (chunk.get("metadata") or {}).items():
+        if value is not None:
+            metadata[f"meta_{key}"] = value
+    return metadata
 
 
 def main():
