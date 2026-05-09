@@ -57,3 +57,27 @@
   - Router can now use a real LLM classification path when credentials are available.
   - If the API call fails or the model returns an invalid label, Router still falls back to heuristic routing.
   - .env values are now loaded automatically by LLMClient when python-dotenv is installed.
+
+### 2026-05-10 Step 2 Extension
+
+- Intent: validate the Router against a free provider without rewriting the router logic again.
+- Changes:
+  - Added Groq text-completion support to `LLMClient` using the OpenAI-compatible chat completions API.
+  - Added provider/model resolution through `LLM_PROVIDER`, `LLM_MODEL`, and `GROQ_MODEL`.
+  - Updated `.env.example` to document Groq-related environment variables.
+  - Added targeted tests for Groq provider selection and request payload shape.
+- Files:
+  - src/llm/client.py
+  - tests/test_llm_client.py
+  - .env.example
+- Validation:
+  - pytest tests/test_workflows.py tests/test_llm_client.py -q
+  - 11 passed in 1.78s
+  - live Groq smoke test result:
+    - PROVIDER=groq
+    - MODEL=llama-3.1-8b-instant
+    - RAW=boss_strategy
+    - ROUTE=boss_strategy
+- Result:
+  - Router now works with a real Groq API key for text intent classification.
+  - Live verification confirmed that the route result came from an actual model response, not only the heuristic fallback.
