@@ -47,7 +47,8 @@ def process_wiki(file: Path) -> list[dict]:
     data = json.loads(file.read_text(encoding="utf-8"))
     boss = data["boss_name"]
     chapter = data.get("chapter", 1)
-    chunks = chunk_text(data.get("raw_text", ""))
+    raw_text = data.get("raw_text") or _synthesize_wiki_text(data)
+    chunks = chunk_text(raw_text)
     return [
         {
             "text": c,
@@ -61,6 +62,27 @@ def process_wiki(file: Path) -> list[dict]:
         }
         for c in chunks if c.strip()
     ]
+
+
+def _synthesize_wiki_text(data: dict) -> str:
+    sections = []
+    boss_name = data.get("boss_name")
+    if boss_name:
+        sections.append(f"Boss：{boss_name}。")
+
+    for move in data.get("moves", []):
+        name = move.get("name", "")
+        description = move.get("description", "")
+        phase = move.get("phase")
+        if name and description:
+            phase_prefix = f"第{phase}阶段" if phase is not None else ""
+            sections.append(f"{phase_prefix}{name}：{description}")
+
+    tips = data.get("tips")
+    if tips:
+        sections.append(f"打法提示：{tips}")
+
+    return " ".join(section.strip() for section in sections if section.strip())
 
 
 def process_nga_jsonl(file: Path) -> list[dict]:

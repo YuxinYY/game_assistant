@@ -7,6 +7,13 @@
 - Do not move to the next step until the current step passes.
 - Record changed files, intent, and validation result here.
 
+## Current Decision
+
+- `BaseAgent._decide()` is intentionally deferred for now.
+- Reason: implementing `_decide()` alone would not make the pipeline usable yet; it also requires provider-compatible tool calling, structured tool output handling, and state write-back from ReAct observations.
+- Near-term priority is to replace ReAct-dependent execution in `WikiAgent` and `CommunityAgent` with deterministic retrieval that writes real results into `AgentState`.
+- ReAct and `_decide()` will be revisited only after the MVP pipeline can run end-to-end on a normal text query.
+
 ## Step Plan
 
 | Step | Goal | Main Files | Validation | Status |
@@ -14,10 +21,10 @@
 | 1 | Make Router fall back to heuristic routing so Orchestrator can start | src/core/router.py, tests/test_workflows.py | pytest tests/test_workflows.py -q | Done |
 | 2 | Implement real LLM Router with robust parsing and fallback | src/core/router.py, src/llm/client.py, tests/test_workflows.py | pytest tests/test_workflows.py -q | Done |
 | 3 | Disable BM25 runtime failure so retrieval can degrade to dense-only mode | src/retrieval/hybrid_retriever.py, scripts/build_indexes.py, scripts/chunk_and_clean.py, tests/test_retrieval.py, tests/test_data_pipeline.py | targeted retriever unit test + sample index rebuild | Done |
-| 4 | Bypass unfinished ReAct loop in WikiAgent and CommunityAgent with deterministic retrieval | src/agents/wiki_agent.py, src/agents/community_agent.py, tests/test_agents.py | targeted agent tests with mocked search | Planned |
-| 5 | Replace synthesis TODO output with real LLM call plus safe fallback | src/agents/synthesis_agent.py, tests/test_agents.py | targeted synthesis tests | Planned |
-| 6 | Add one MVP smoke test for the minimal pipeline | tests/ | patched end-to-end smoke test | Planned |
-| 7 | Revisit ReAct loop, BM25 ranking quality, and query rewrite after MVP pipeline is stable | multiple files | phased tests | Planned |
+| 4 | Replace ReAct-dependent WikiAgent and CommunityAgent execution with deterministic retrieval that updates AgentState | src/agents/wiki_agent.py, src/agents/community_agent.py, scripts/chunk_and_clean.py, tests/test_agents.py, tests/test_data_pipeline.py | targeted agent tests + sample rebuild + orchestrator smoke test | Done |
+| 5 | Make SynthesisAgent produce a real answer with safe fallback and visible citations | src/agents/synthesis_agent.py, tests/test_agents.py | targeted synthesis tests | Planned |
+| 6 | Add one MVP smoke test for the minimal text-query pipeline | tests/ | patched end-to-end smoke test | Planned |
+| 7 | Revisit ReAct `_decide()`, tool-use compatibility, BM25 quality, and query rewrite after MVP stability | multiple files | phased tests | Planned |
 
 ## Change Entries
 
@@ -117,3 +124,28 @@
   - New BM25 indexes can participate in real sparse retrieval.
   - Existing or incomplete BM25 indexes degrade safely to dense-only retrieval.
   - The sample dataset is now indexed and queryable, with the current limitation that the sample wiki file does not yet produce wiki chunks because it lacks a `raw_text` field.
+
+### 2026-05-10 Step 4
+
+- Intent: bypass the unfinished ReAct agent loop in runtime-critical agents while keeping real retrieval behavior.
+- Changes:
+  - Reworked `WikiAgent.execute()` to perform deterministic wiki retrieval and write real documents and identified entities into `AgentState`.
+  - Reworked `CommunityAgent.execute()` to use deterministic query rewriting plus NGA retrieval, with a real fallback from chapter-filtered retrieval to unfiltered retrieval when metadata is incomplete.
+  - Explicitly kept `BaseAgent._decide()` deferred; the MVP path no longer depends on ReAct to progress.
+  - Updated the wiki chunking pipeline so sample wiki files without `raw_text` can synthesize text from `moves` and `tips` and enter the index.
+  - Rebuilt sample chunks and indexes after the wiki pipeline update.
+- Files:
+  - src/agents/wiki_agent.py
+  - src/agents/community_agent.py
+  - scripts/chunk_and_clean.py
+  - tests/test_agents.py
+  - tests/test_data_pipeline.py
+- Validation:
+  - pytest tests/test_agents.py tests/test_retrieval.py tests/test_data_pipeline.py -q
+  - 16 passed in 1.37s
+  - sample rebuild succeeded: `data/processed/chunks.jsonl`, `data/indexes/chroma_db`, `data/indexes/bm25_index.pkl`
+  - retrieval smoke test succeeded for both wiki and NGA sample data
+  - orchestrator smoke test now completes and returns a populated `AgentState` with `final_answer=[TODO: synthesis LLM call not yet implemented]`
+- Result:
+  - A normal text query now passes Router, ProfileAgent, WikiAgent, CommunityAgent, and AnalysisAgent without hitting `BaseAgent._decide()`.
+  - The current end-to-end blocker is no longer ReAct; it is only the placeholder synthesis output.

@@ -32,15 +32,49 @@ class WikiAgent(BaseAgent):
         return [_WikiSearch(), _EntityLookup()]
 
     def execute(self, state: AgentState) -> AgentState:
-        """
-        1. Rewrite query into wiki-friendly terms (move name, boss name)
-        2. ReAct: search wiki until move is identified
-        3. Write identified entities + wiki docs into state
-        """
-        context = (
-            f"用户问题: {state.user_query}\n"
-            f"玩家状态: {state.player_profile.to_context_string()}\n"
-            f"任务: 识别用户描述的游戏实体（boss名、招式名），从 wiki 获取准确信息"
+        docs = wiki_search(state.user_query)
+        state.retrieved_docs = _merge_docs(state.retrieved_docs, docs)
+
+        entities = _extract_entities(docs)
+        state.identified_entities = _merge_entities(state.identified_entities, entities)
+
+        self._trace(
+            state,
+            0,
+            "deterministic_wiki_search",
+            str(
+                {
+                    "query": state.user_query,
+                    "doc_count": len(docs),
+                    "entities": entities,
+                }
+            ),
         )
-        state = self.react_loop(state, context)
         return state
+
+
+def _extract_entities(docs) -> list[str]:
+    entities = []
+    for doc in docs:
+        if doc.entity and doc.entity not in entities:
+            entities.append(doc.entity)
+    return entities
+
+
+def _merge_entities(existing: list[str], new_entities: list[str]) -> list[str]:
+    merged = list(existing)
+    for entity in new_entities:
+        if entity not in merged:
+            merged.append(entity)
+    return merged
+
+
+def _merge_docs(existing, new_docs):
+    merged = list(existing)
+    seen = {(doc.url, doc.text) for doc in existing}
+    for doc in new_docs:
+        key = (doc.url, doc.text)
+        if key not in seen:
+            seen.add(key)
+            merged.append(doc)
+    return merged

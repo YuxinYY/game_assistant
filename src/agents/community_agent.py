@@ -52,17 +52,40 @@ class CommunityAgent(BaseAgent):
         return [_NGASearch(), _BilibiliSearch(), _RedditSearch(), _QueryRewrite()]
 
     def execute(self, state: AgentState) -> AgentState:
-        """
-        1. Rewrite query using identified wiki entities from WikiAgent
-        2. ReAct: search community sources with chapter_filter = player chapter
-        3. Append community docs to state.retrieved_docs
-        """
-        entity_hint = ", ".join(state.identified_entities) if state.identified_entities else ""
-        context = (
-            f"用户问题: {state.user_query}\n"
-            f"已识别实体: {entity_hint}\n"
-            f"玩家当前章节: {state.player_profile.chapter}\n"
-            f"任务: 在玩家社区数据中搜索针对上述实体的实战攻略，优先搜索章节≤{state.player_profile.chapter}的内容"
+        queries = QueryRewriter().rewrite(
+            state.user_query,
+            known_entities=state.identified_entities,
         )
-        state = self.react_loop(state, context)
+
+        retrieved_docs = []
+        for query in queries:
+            docs = nga_search(query, chapter_filter=state.player_profile.chapter)
+            if not docs:
+                docs = nga_search(query)
+            retrieved_docs = _merge_docs(retrieved_docs, docs)
+
+        state.retrieved_docs = _merge_docs(state.retrieved_docs, retrieved_docs)
+        self._trace(
+            state,
+            0,
+            "deterministic_community_search",
+            str(
+                {
+                    "queries": queries,
+                    "source": "nga",
+                    "doc_count": len(retrieved_docs),
+                }
+            ),
+        )
         return state
+
+
+def _merge_docs(existing, new_docs):
+    merged = list(existing)
+    seen = {(doc.url, doc.text) for doc in existing}
+    for doc in new_docs:
+        key = (doc.url, doc.text)
+        if key not in seen:
+            seen.add(key)
+            merged.append(doc)
+    return merged

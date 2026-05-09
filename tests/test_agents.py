@@ -5,8 +5,10 @@ Uses dummy config and mocked LLM to test agent logic without real API calls.
 
 from unittest.mock import patch
 from src.core.state import AgentState, PlayerProfile, Document
+from src.agents.community_agent import CommunityAgent
 from src.agents.profile_agent import ProfileAgent, _filter_by_profile
 from src.agents.analysis_agent import AnalysisAgent
+from src.agents.wiki_agent import WikiAgent
 
 
 DUMMY_CONFIG = {
@@ -127,3 +129,80 @@ class TestAnalysisAgent:
             state.retrieved_docs = []
             result = agent.execute(state)
             assert result.consensus_analysis == {"strategies": [], "conflicts": []}
+
+
+class TestWikiAgent:
+    def test_execute_populates_docs_and_entities(self):
+        docs = [
+            make_doc(
+                "虎跃斩第三段要侧闪",
+                source="wiki",
+                url="http://wiki/1",
+                chapter=1,
+            )
+        ]
+        docs[0].entity = "虎先锋"
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None), patch(
+            "src.agents.wiki_agent.wiki_search", return_value=docs
+        ):
+            agent = WikiAgent(DUMMY_CONFIG)
+            state = make_state("虎先锋那个招怎么躲？")
+
+            result = agent.execute(state)
+
+        assert len(result.retrieved_docs) == 1
+        assert result.retrieved_docs[0].source == "wiki"
+        assert result.identified_entities == ["虎先锋"]
+        assert result.trace[0].action == "deterministic_wiki_search"
+
+
+class TestCommunityAgent:
+    def test_execute_uses_unfiltered_fallback_when_chapter_filtered_search_is_empty(self):
+        docs = [
+            make_doc(
+                "虎跃斩第三段向左闪",
+                source="nga",
+                chapter=None,
+                url="http://nga/1",
+            )
+        ]
+
+        def fake_nga_search(query, chapter_filter=None):
+            if chapter_filter is not None:
+                return []
+            return docs
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None), patch(
+            "src.agents.community_agent.nga_search", side_effect=fake_nga_search
+        ):
+            agent = CommunityAgent(DUMMY_CONFIG)
+            state = make_state("虎先锋那个招怎么躲？", chapter=1)
+            state.identified_entities = ["虎先锋"]
+
+            result = agent.execute(state)
+
+        assert len(result.retrieved_docs) == 1
+        assert result.retrieved_docs[0].source == "nga"
+        assert result.trace[0].action == "deterministic_community_search"
+
+    def test_execute_deduplicates_docs_across_rewritten_queries(self):
+        docs = [
+            make_doc(
+                "推荐侧闪",
+                source="nga",
+                chapter=1,
+                url="http://nga/1",
+            )
+        ]
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None), patch(
+            "src.agents.community_agent.nga_search", return_value=docs
+        ):
+            agent = CommunityAgent(DUMMY_CONFIG)
+            state = make_state("虎先锋怎么打？", chapter=1)
+            state.identified_entities = ["虎先锋"]
+
+            result = agent.execute(state)
+
+        assert len(result.retrieved_docs) == 1
