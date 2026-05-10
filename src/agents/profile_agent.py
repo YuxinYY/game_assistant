@@ -4,6 +4,7 @@ ProfileAgent: the single owner of player-state updates and screenshot parsing.
 
 from __future__ import annotations
 
+from pathlib import Path
 import re
 from typing import Any, Callable
 
@@ -17,6 +18,7 @@ from src.tools.parsers import (
 )
 from src.tools.profile_ops import load_knowledge_base, merge_to_profile, validate_extraction
 from src.tools.spoiler_filter import apply_spoiler_filter
+from src.tools.search import infer_wiki_entity
 
 # Chapter gates: which chapter unlocks each item
 CHAPTER_GATES: dict[str, int] = {
@@ -40,6 +42,7 @@ class _FunctionTool(Tool):
 class ProfileAgent(BaseAgent):
     name = "profile_agent"
     prompt_file = "profile_agent.txt"
+    visual_entity_prompt_file = Path(__file__).resolve().parents[1] / "llm" / "prompts" / "profile" / "visible_entity.txt"
 
     def __init__(
         self,
@@ -97,6 +100,15 @@ class ProfileAgent(BaseAgent):
 
     def execute(self, state: AgentState) -> AgentState:
         if state.screenshots():
+            if not self._supports_vision():
+                self._trace(
+                    state,
+                    0,
+                    "vision_unavailable",
+                    "Configured LLM/VLM client does not support screenshot parsing.",
+                )
+                return state
+            self._trace(state, 0, "vision_context", str(self._vision_context()))
             state = self._handle_screenshots(state)
         elif self._has_profile_signal_in_text(state.user_query):
             state = self._handle_conversational_update(state)
@@ -105,7 +117,7 @@ class ProfileAgent(BaseAgent):
 
         state.retrieved_docs = _filter_by_profile(state.retrieved_docs, state.player_profile)
 
-        if self.config.get("spoiler", {}).get("enable", True):
+        if self.config.get("spoiler", {}).get("enable", True) and state.player_profile.chapter is not None:
             state.retrieved_docs = apply_spoiler_filter(
                 state.retrieved_docs, state.player_profile.chapter
             )
@@ -115,18 +127,42 @@ class ProfileAgent(BaseAgent):
         all_updates: list[dict[str, Any]] = []
 
         for index, screenshot in enumerate(state.screenshots()):
-            screenshot_type = self.parsers["classifier"].classify(screenshot)
+            try:
+                screenshot_type = self.parsers["classifier"].classify(screenshot)
+            except Exception as exc:
+                self._trace(state, index, "classify_screenshot_error", str(exc))
+                continue
             parser = self.parsers.get(screenshot_type)
             if parser is None:
+                screenshot_entity = self._identify_visual_entity(screenshot)
+                if screenshot_entity:
+                    state.identified_entities = _merge_entities(state.identified_entities, [screenshot_entity])
                 self._trace(
                     state,
                     index,
                     "classify_screenshot",
-                    f"Unknown or unsupported screenshot type: {screenshot_type}",
+                    str(
+                        {
+                            "screenshot_type": screenshot_type,
+                            "identified_entity": screenshot_entity,
+                            "message": "Unknown or unsupported screenshot type.",
+                        }
+                    ),
                 )
                 continue
 
-            raw_extraction = parser.extract(screenshot)
+            try:
+                raw_extraction = parser.extract(screenshot)
+            except Exception as exc:
+                self._trace(state, index, f"parse_{screenshot_type}_error", str(exc))
+                continue
+
+            screenshot_entity = self._resolve_screenshot_entity(raw_extraction)
+            if not screenshot_entity:
+                screenshot_entity = self._identify_visual_entity(screenshot)
+            if screenshot_entity:
+                state.identified_entities = _merge_entities(state.identified_entities, [screenshot_entity])
+
             validated = validate_extraction(raw_extraction, self.kb)
             state.player_profile, updates = merge_to_profile(
                 validated,
@@ -138,11 +174,34 @@ class ProfileAgent(BaseAgent):
                 state,
                 index,
                 f"parse_{screenshot_type}",
-                str({"raw": raw_extraction, "validated": validated, "updates": updates}),
+                str(
+                    {
+                        "raw": raw_extraction,
+                        "validated": validated,
+                        "identified_entity": screenshot_entity,
+                        "updates": updates,
+                    }
+                ),
             )
 
         state.profile_updates = all_updates
         return state
+
+    def _supports_vision(self) -> bool:
+        supports = getattr(self.vlm, "supports_vision", None)
+        if callable(supports):
+            try:
+                return bool(supports())
+            except Exception:
+                return False
+        return hasattr(self.vlm, "vision_json")
+
+    def _vision_context(self) -> dict[str, Any]:
+        return {
+            "vision_provider": getattr(self.vlm, "vision_provider", None),
+            "vision_model": getattr(self.vlm, "vision_model", None),
+            "supports_vision": self._supports_vision(),
+        }
 
     def _handle_conversational_update(self, state: AgentState) -> AgentState:
         extracted = self._extract_profile_from_text(state.user_query)
@@ -225,9 +284,42 @@ class ProfileAgent(BaseAgent):
 
         return extracted
 
+    def _resolve_screenshot_entity(self, payload: dict[str, Any]) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        candidates = [
+            str(payload.get("current_boss") or "").strip(),
+            str(payload.get("boss_name") or "").strip(),
+        ]
+        for candidate in candidates:
+            if not candidate:
+                continue
+            entity = infer_wiki_entity(candidate)
+            if entity:
+                return entity
+        return ""
+
+    def _identify_visual_entity(self, image_bytes: bytes) -> str:
+        if not self._supports_vision():
+            return ""
+        try:
+            prompt = self.visual_entity_prompt_file.read_text(encoding="utf-8")
+            payload = self.vlm.vision_json(image_bytes=image_bytes, prompt=prompt)
+        except Exception:
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        candidate = str(payload.get("visible_entity") or "").strip()
+        if not candidate:
+            return ""
+        return infer_wiki_entity(candidate)
+
 
 def _filter_by_profile(docs: list[Document], profile) -> list[Document]:
     """Remove docs that recommend items the player hasn't unlocked yet."""
+    if profile.chapter is None:
+        return list(docs)
+
     filtered = []
     owned_items = set(
         profile.unlocked_skills
@@ -251,3 +343,11 @@ def _filter_by_profile(docs: list[Document], profile) -> list[Document]:
         if not blocked:
             filtered.append(doc)
     return filtered
+
+
+def _merge_entities(existing: list[str], new_entities: list[str]) -> list[str]:
+    merged = list(existing)
+    for entity in new_entities:
+        if entity and entity not in merged:
+            merged.append(entity)
+    return merged

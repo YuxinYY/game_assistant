@@ -4,8 +4,16 @@ Enforces: every claim must cite a source, contested items must be flagged,
 unsupported claims must be admitted as "不确定".
 """
 
+from pathlib import Path
+
 from src.agents.base_agent import BaseAgent, Tool
 from src.core.state import AgentState, Citation
+
+
+WORKFLOW_PROMPT_FILES = {
+    "fact_lookup": "synthesis_fact_lookup.txt",
+    "navigation": "synthesis_navigation.txt",
+}
 
 
 class SynthesisAgent(BaseAgent):
@@ -22,7 +30,7 @@ class SynthesisAgent(BaseAgent):
             self._trace(state, 0, "synthesis_no_results", "No retrieved docs available for synthesis.")
             return state
 
-        prompt = self._load_prompt()
+        prompt = self._load_prompt_for_workflow(state.workflow)
         context = _build_synthesis_context(state)
         messages = [{"role": "user", "content": context}]
 
@@ -36,6 +44,11 @@ class SynthesisAgent(BaseAgent):
             state.final_answer = _build_extract_fallback_answer(state, error=str(exc))
             self._trace(state, 0, "synthesis_fallback", str(exc))
         return state
+
+    def _load_prompt_for_workflow(self, workflow: str | None) -> str:
+        prompt_file = WORKFLOW_PROMPT_FILES.get(workflow, self.prompt_file)
+        path = Path(__file__).parent.parent / "llm" / "prompts" / prompt_file
+        return path.read_text(encoding="utf-8") if path.exists() else self._load_prompt()
 
 
 def _build_synthesis_context(state: AgentState) -> str:
@@ -59,6 +72,7 @@ def _build_synthesis_context(state: AgentState) -> str:
             )
 
     return (
+        f"当前 workflow:\n{state.workflow or 'unknown'}\n\n"
         f"玩家状态:\n{state.player_profile.to_context_string()}\n\n"
         f"用户问题:\n{state.user_query}\n\n"
         f"检索到的内容:\n{docs_text}\n\n"
@@ -82,6 +96,26 @@ def _extract_citations(docs) -> list[Citation]:
 
 
 def _build_no_results_answer(state: AgentState) -> str:
+    if state.workflow == "fact_lookup":
+        return (
+            "## 当前结论\n"
+            "- 检索内容中未找到足够依据，暂时无法给出可靠的事实回答。\n\n"
+            "## 你的问题\n"
+            f"- {state.user_query}\n\n"
+            "## 建议\n"
+            "- 请补充更明确的实体名、机制名或关键词后再试。"
+        )
+
+    if state.workflow == "navigation":
+        return (
+            "## 当前位置结论\n"
+            "- 检索内容中未找到足够依据，暂时无法确认目标位置。\n\n"
+            "## 你的问题\n"
+            f"- {state.user_query}\n\n"
+            "## 建议\n"
+            "- 请补充地点、NPC、道具名或章节信息后再试。"
+        )
+
     return (
         "## 当前结果\n"
         "- 检索内容中未找到足够资料，暂时无法生成有依据的攻略回答。\n\n"
@@ -93,6 +127,12 @@ def _build_no_results_answer(state: AgentState) -> str:
 
 
 def _build_extract_fallback_answer(state: AgentState, error: str = "") -> str:
+    if state.workflow == "fact_lookup":
+        return _build_fact_lookup_fallback_answer(state, error)
+
+    if state.workflow == "navigation":
+        return _build_navigation_fallback_answer(state, error)
+
     sections = ["## 基于检索结果的直接整理"]
 
     entities = state.identified_entities or [doc.entity for doc in state.retrieved_docs if doc.entity]
@@ -105,7 +145,9 @@ def _build_extract_fallback_answer(state: AgentState, error: str = "") -> str:
 
     sections.append("\n## 针对你的 build 的建议")
     for doc in state.retrieved_docs[:3]:
-        sections.append(f"- {_to_brief_evidence(doc.text)}（来源: {doc.source} {doc.url}）")
+        sections.append(
+            f"- {_to_brief_evidence(doc.text)} 来源: {doc.source} {_format_reference_link(doc.url)}"
+        )
 
     sections.append("\n## 共识度")
     consensus_text = _build_consensus_lines(state)
@@ -123,6 +165,40 @@ def _build_extract_fallback_answer(state: AgentState, error: str = "") -> str:
     else:
         sections.append("- 当前主要不确定性来自样本规模较小，后续补充更多来源会更稳。")
 
+    return _append_citation_block("\n".join(sections), _extract_citations(state.retrieved_docs))
+
+
+def _build_fact_lookup_fallback_answer(state: AgentState, error: str = "") -> str:
+    sections = ["## 直接结论"]
+    sections.append(f"- {_to_brief_evidence(state.retrieved_docs[0].text, max_chars=140)}")
+
+    sections.append("\n## 依据")
+    for doc in state.retrieved_docs[:3]:
+        sections.append(
+            f"- {doc.source}: {_to_brief_evidence(doc.text, max_chars=120)} {_format_reference_link(doc.url)}"
+        )
+
+    sections.append("\n## 系统不确定的地方")
+    if error:
+        sections.append(f"- 本次使用了降级整理，因为生成阶段失败：{error}")
+    sections.append("- 当前回答基于检索到的事实片段整理，未做额外推断。")
+    return _append_citation_block("\n".join(sections), _extract_citations(state.retrieved_docs))
+
+
+def _build_navigation_fallback_answer(state: AgentState, error: str = "") -> str:
+    sections = ["## 位置结论"]
+    sections.append(f"- {_to_brief_evidence(state.retrieved_docs[0].text, max_chars=140)}")
+
+    sections.append("\n## 路线或前置条件")
+    for doc in state.retrieved_docs[:3]:
+        sections.append(
+            f"- {doc.source}: {_to_brief_evidence(doc.text, max_chars=120)} {_format_reference_link(doc.url)}"
+        )
+
+    sections.append("\n## 系统不确定的地方")
+    if error:
+        sections.append(f"- 本次使用了降级整理，因为生成阶段失败：{error}")
+    sections.append("- 如果目标存在多种译名或地图分支，可能还需要补充章节或区域名。")
     return _append_citation_block("\n".join(sections), _extract_citations(state.retrieved_docs))
 
 
@@ -144,10 +220,14 @@ def _append_citation_block(answer: str, citations: list[Citation]) -> str:
     citation_lines = ["\n## 参考来源"]
     for index, citation in enumerate(citations, start=1):
         author_suffix = f" | 作者: {citation.author}" if citation.author else ""
-        citation_lines.append(
-            f"- [{index}] {citation.source} | {citation.url}{author_suffix}"
-        )
+        citation_lines.append(f"- [{index}] {citation.source} | {_format_reference_link(citation.url)}{author_suffix}")
     return answer.rstrip() + "\n\n" + "\n".join(citation_lines)
+
+
+def _format_reference_link(url: str) -> str:
+    if not url:
+        return "无原文链接"
+    return f"[原文]({url})"
 
 
 def _to_brief_evidence(text: str, max_chars: int = 70) -> str:

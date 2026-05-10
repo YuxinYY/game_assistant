@@ -32,26 +32,37 @@ class AnalysisAgent(BaseAgent):
         return [_ConsensusCount(), _ConflictDetect()]
 
     def execute(self, state: AgentState) -> AgentState:
-        """
-        Build consensus_analysis dict from retrieved_docs.
-        Structure written to state:
-        {
-          "strategies": [
-            {"label": "侧向闪避", "source_count": 8, "sources": {...}, "is_contested": False},
-            ...
-          ],
-          "conflicts": [{"topic": "棍反", "pro": [...], "con": [...]}]
-        }
-        """
         docs = state.retrieved_docs
         if not docs:
             state.consensus_analysis = {"strategies": [], "conflicts": []}
             return state
 
-        strategies = count_source_consensus(docs, topic=state.user_query)
-        conflicts = detect_conflicts(docs)
+        self._strategies = None
+        self._conflicts = None
+        initial_context = (
+            "目标: 统计 retrieved_docs 中的共识策略，并识别冲突观点。\n"
+            "先做共识统计，再补冲突检测。"
+        )
+        return self.react_loop(state, initial_context)
+
+    def _apply_tool_result(self, state: AgentState, action_name: str, action_args: dict, tool_result) -> None:
+        if action_name == "consensus_count" and isinstance(tool_result, list):
+            self._strategies = tool_result
+        elif action_name == "conflict_detect" and isinstance(tool_result, list):
+            self._conflicts = tool_result
+
         state.consensus_analysis = {
-            "strategies": strategies,
-            "conflicts": conflicts,
+            "strategies": self._strategies or [],
+            "conflicts": self._conflicts or [],
         }
-        return state
+
+    def _fallback_decide(self, context: str, state: AgentState) -> tuple[str, str, dict]:
+        if self._strategies is None:
+            return (
+                "先统计各策略的来源共识",
+                "consensus_count",
+                {"docs": state.retrieved_docs, "topic": state.user_query},
+            )
+        if self._conflicts is None:
+            return "再检测互相矛盾的观点", "conflict_detect", {"docs": state.retrieved_docs}
+        return "共识分析已完成", "FINISH", {}

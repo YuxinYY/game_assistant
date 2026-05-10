@@ -24,6 +24,9 @@ class Router:
     def route(self, state: AgentState) -> str:
         """Classify query intent and fall back to heuristics until LLM routing is ready."""
         query = state.user_query
+        override = self._priority_rule_route(query)
+        if override:
+            return override
         if self.llm is not None:
             try:
                 return self._llm_route(query)
@@ -58,6 +61,43 @@ class Router:
         if any(k in query for k in nav_keywords):
             return "navigation"
         return "fact_lookup"
+
+    def _priority_rule_route(self, query: str) -> str | None:
+        if self._is_fact_listing_or_count_query(query):
+            return "fact_lookup"
+        return None
+
+    def _is_fact_listing_or_count_query(self, query: str) -> bool:
+        listing_or_count_keywords = (
+            "几个",
+            "多少",
+            "哪些",
+            "有哪些",
+            "哪几个",
+            "有哪几",
+            "几种",
+            "都叫什么",
+            "叫什么",
+            "什么招式",
+            "招式名字",
+            "大招名字",
+        )
+        action_keywords = (
+            "怎么躲",
+            "怎么打",
+            "如何打",
+            "打法",
+            "闪避",
+            "躲",
+            "打",
+            "推荐",
+            "建议",
+            "应对",
+            "破解",
+        )
+        has_fact_shape = any(keyword in query for keyword in listing_or_count_keywords)
+        has_action_shape = any(keyword in query for keyword in action_keywords)
+        return has_fact_shape and not has_action_shape
 
     def _build_routing_prompt(self, query: str) -> str:
         categories = "\n".join(f"- {k}: {v}" for k, v in INTENT_CATEGORIES.items())

@@ -14,11 +14,14 @@ CHAPTER_CONTENT: dict[int, list[str]] = {
 }
 
 
-def apply_spoiler_filter(docs: list[Document], max_chapter: int) -> list[Document]:
+def apply_spoiler_filter(docs: list[Document], max_chapter: int | None) -> list[Document]:
     """
     Remove docs that mention content gated behind chapters > max_chapter.
     If a doc has an explicit chapter field, use that; otherwise fall back to keyword scan.
     """
+    if max_chapter is None:
+        return list(docs)
+
     allowed = []
     for doc in docs:
         if doc.chapter is not None and doc.chapter > max_chapter:

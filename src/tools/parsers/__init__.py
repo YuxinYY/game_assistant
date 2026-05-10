@@ -17,9 +17,12 @@ class BaseParser:
 
     def extract(self, image_bytes: bytes) -> dict[str, Any]:
         prompt = self._load_prompt()
-        if not hasattr(self.vlm, "vision_json"):
-            raise NotImplementedError("Configured VLM client does not support image parsing.")
-        payload = self.vlm.vision_json(image_bytes=image_bytes, prompt=prompt)
+        if not _supports_vision(self.vlm):
+            return {}
+        try:
+            payload = self.vlm.vision_json(image_bytes=image_bytes, prompt=prompt)
+        except Exception:
+            return {}
         if not isinstance(payload, dict):
             return {}
         payload.setdefault("screenshot_type", self.screenshot_type)
@@ -28,6 +31,16 @@ class BaseParser:
     def _load_prompt(self) -> str:
         prompt_file = Path(__file__).resolve().parents[2] / "llm" / "prompts" / self.prompt_path
         return prompt_file.read_text(encoding="utf-8")
+
+
+def _supports_vision(vlm_client) -> bool:
+    supports = getattr(vlm_client, "supports_vision", None)
+    if callable(supports):
+        try:
+            return bool(supports())
+        except Exception:
+            return False
+    return hasattr(vlm_client, "vision_json")
 
 
 from src.tools.parsers.classifier import ScreenshotClassifier

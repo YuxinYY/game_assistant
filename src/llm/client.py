@@ -30,22 +30,13 @@ class LLMClient:
         self.temperature = config["llm"]["temperature"]
         self.max_tokens = config["llm"].get("max_tokens", 2048)
         self._client = None
-        api_key = self._resolve_api_key()
-        if self.provider == "anthropic":
-            if anthropic is not None and api_key:
-                self._client = anthropic.Anthropic(api_key=api_key)
-        elif self.provider == "groq":
-            if api_key:
-                session = requests.Session()
-                session.headers.update(
-                    {
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    }
-                )
-                self._client = session
-        else:
+        if self.provider not in {"anthropic", "groq"}:
             raise ValueError(f"Unsupported LLM provider: {self.provider}")
+        self._client = self._build_provider_client(self.provider, self._resolve_api_key(self.provider))
+
+        self.vision_provider = self._resolve_vision_provider(config)
+        self.vision_model = self._resolve_vision_model(config)
+        self._vision_client = self._resolve_vision_client()
 
     def complete(self, messages: list[dict], system: str = "") -> str:
         """Single chat completion. Returns response text."""
@@ -98,14 +89,14 @@ class LLMClient:
         model: str | None = None,
         max_tokens: int | None = None,
     ) -> dict[str, Any]:
-        if self.provider != "anthropic":
+        if not self.supports_vision():
             raise NotImplementedError(
-                f"Vision calls are not implemented for provider '{self.provider}'."
+                f"Vision calls are not implemented for provider '{self.vision_provider}'."
             )
-        self._require_client()
+        media_type = self._infer_media_type(image_bytes)
         encoded = base64.standard_b64encode(image_bytes).decode()
-        response = self._client.messages.create(
-            model=model or self.model,
+        response = self._vision_client.messages.create(
+            model=model or self.vision_model,
             max_tokens=max_tokens or self.max_tokens,
             messages=[
                 {
@@ -115,7 +106,7 @@ class LLMClient:
                             "type": "image",
                             "source": {
                                 "type": "base64",
-                                "media_type": "image/png",
+                                "media_type": media_type,
                                 "data": encoded,
                             },
                         },
@@ -146,6 +137,9 @@ class LLMClient:
                 return {}
             return payload if isinstance(payload, dict) else {}
 
+    def supports_vision(self) -> bool:
+        return self.vision_provider == "anthropic" and self._vision_client is not None
+
     def _resolve_provider(self, config: dict) -> str:
         configured = os.getenv("LLM_PROVIDER") or config["llm"].get("provider")
         if configured:
@@ -164,10 +158,55 @@ class LLMClient:
             return os.getenv("GROQ_MODEL") or config["llm"].get("groq_model") or "llama-3.1-8b-instant"
         return config["llm"]["model"]
 
-    def _resolve_api_key(self) -> str:
-        if self.provider == "groq":
+    def _resolve_api_key(self, provider: str) -> str:
+        if provider == "groq":
             return os.getenv("GROQ_API_KEY", "")
         return os.getenv("ANTHROPIC_API_KEY", "")
+
+    def _resolve_vision_provider(self, config: dict) -> str:
+        configured = os.getenv("VLM_PROVIDER") or config["llm"].get("vision_provider")
+        if configured:
+            return configured.strip().lower()
+        if self.provider == "anthropic":
+            return "anthropic"
+        if os.getenv("ANTHROPIC_API_KEY"):
+            return "anthropic"
+        return self.provider
+
+    def _resolve_vision_model(self, config: dict) -> str:
+        env_model = os.getenv("VLM_MODEL")
+        if env_model:
+            return env_model
+        if self.vision_provider == self.provider:
+            return self.model
+        if self.vision_provider == "groq":
+            return os.getenv("GROQ_MODEL") or config["llm"].get("groq_model") or "llama-3.1-8b-instant"
+        return config["llm"].get("vision_model") or config["llm"].get("model") or self.model
+
+    def _resolve_vision_client(self):
+        if self.vision_provider not in {"anthropic", "groq"}:
+            return None
+        if self.vision_provider == self.provider:
+            return self._client
+        return self._build_provider_client(self.vision_provider, self._resolve_api_key(self.vision_provider))
+
+    def _build_provider_client(self, provider: str, api_key: str):
+        if provider == "anthropic":
+            if anthropic is not None and api_key:
+                return anthropic.Anthropic(api_key=api_key)
+            return None
+        if provider == "groq":
+            if api_key:
+                session = requests.Session()
+                session.headers.update(
+                    {
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    }
+                )
+                return session
+            return None
+        return None
 
     def _groq_complete(self, messages: list[dict], system: str = "") -> str:
         self._require_client()
@@ -198,3 +237,13 @@ class LLMClient:
                 f"LLM client for provider '{self.provider}' is unavailable. "
                 f"Check dependencies and set {env_var}."
             )
+
+    @staticmethod
+    def _infer_media_type(image_bytes: bytes) -> str:
+        if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if image_bytes.startswith(b"\xff\xd8"):
+            return "image/jpeg"
+        if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+            return "image/webp"
+        return "image/png"

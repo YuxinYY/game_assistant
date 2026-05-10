@@ -31,6 +31,14 @@ def make_doc(text: str, source: str = "nga", chapter: int = 1, url: str = "http:
 
 
 class TestProfileAgent:
+    def test_does_not_filter_docs_when_chapter_is_unset(self):
+        docs = [make_doc("推荐用广智变身", chapter=1)]
+        profile = PlayerProfile(chapter=None)
+
+        filtered = _filter_by_profile(docs, profile)
+
+        assert len(filtered) == 1
+
     def test_filters_out_locked_transformation(self):
         # Player is in chapter 1; doc recommends 广智 (chapter 3)
         docs = [
@@ -50,6 +58,10 @@ class TestProfileAgent:
         assert len(filtered) == 1
 
     def test_merges_multiple_screenshots(self):
+        class FakeVisionClient:
+            def supports_vision(self):
+                return True
+
         class FakeClassifier:
             def __init__(self):
                 self.calls = 0
@@ -68,7 +80,7 @@ class TestProfileAgent:
         with patch("src.llm.client.LLMClient.__init__", return_value=None):
             agent = ProfileAgent(
                 DUMMY_CONFIG,
-                vlm_client=object(),
+                vlm_client=FakeVisionClient(),
                 knowledge_base={
                     "all_spells": ["定身术"],
                     "all_spirits": ["广智"],
@@ -95,6 +107,91 @@ class TestProfileAgent:
         assert result.player_profile.unlocked_spells == ["定身术"]
         assert len(result.profile_updates) == 4
 
+    def test_screenshot_combat_hud_can_seed_boss_entity(self):
+        class FakeVisionClient:
+            def supports_vision(self):
+                return True
+
+        class FakeClassifier:
+            def classify(self, _image):
+                return "combat_hud"
+
+        class FakeParser:
+            def extract(self, _image):
+                return {
+                    "current_boss": "虎先锋",
+                    "chapter": 2,
+                    "confidence": 0.91,
+                }
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None):
+            agent = ProfileAgent(
+                DUMMY_CONFIG,
+                vlm_client=FakeVisionClient(),
+                knowledge_base={
+                    "all_spells": [],
+                    "all_spirits": [],
+                    "all_armors": [],
+                    "all_skills_tree": [],
+                },
+                parsers={
+                    "classifier": FakeClassifier(),
+                    "combat_hud": FakeParser(),
+                },
+            )
+            state = AgentState(
+                user_query="看图",
+                user_screenshots=[b"hud"],
+                player_profile=PlayerProfile(),
+            )
+
+            result = agent.execute(state)
+
+        assert result.identified_entities == ["虎先锋"]
+        assert result.player_profile.chapter == 2
+        assert any(event.action == "parse_combat_hud" for event in result.trace)
+
+    def test_other_screenshot_can_seed_boss_entity_via_generic_visual_detector(self):
+        class FakeVisionClient:
+            vision_provider = "anthropic"
+            vision_model = "claude-sonnet-4-7"
+
+            def supports_vision(self):
+                return True
+
+            def vision_json(self, image_bytes=None, prompt=""):
+                return {"visible_entity": "虎先锋", "entity_type": "boss", "confidence": 0.88}
+
+        class FakeClassifier:
+            def classify(self, _image):
+                return "other"
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None):
+            agent = ProfileAgent(
+                DUMMY_CONFIG,
+                vlm_client=FakeVisionClient(),
+                knowledge_base={
+                    "all_spells": [],
+                    "all_spirits": [],
+                    "all_armors": [],
+                    "all_skills_tree": [],
+                },
+                parsers={
+                    "classifier": FakeClassifier(),
+                },
+            )
+            state = AgentState(
+                user_query="看图",
+                user_screenshots=[b"scene"],
+                player_profile=PlayerProfile(),
+            )
+
+            result = agent.execute(state)
+
+        assert result.identified_entities == ["虎先锋"]
+        assert any(event.action == "vision_context" for event in result.trace)
+        assert any(event.action == "classify_screenshot" for event in result.trace)
+
     def test_conversational_update_corrects_profile(self):
         with patch("src.llm.client.LLMClient.__init__", return_value=None):
             agent = ProfileAgent(
@@ -119,6 +216,33 @@ class TestProfileAgent:
         assert result.player_profile.equipped_spells == ["定身术"]
         assert result.player_profile.equipped_armor == ["行者套装"]
         assert len(result.profile_updates) >= 3
+
+    def test_screenshot_flow_gracefully_skips_when_vision_unavailable(self):
+        class NoVisionClient:
+            def supports_vision(self):
+                return False
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None):
+            agent = ProfileAgent(
+                DUMMY_CONFIG,
+                vlm_client=NoVisionClient(),
+                knowledge_base={
+                    "all_spells": [],
+                    "all_spirits": [],
+                    "all_armors": [],
+                    "all_skills_tree": [],
+                },
+            )
+            state = AgentState(
+                user_query="看图",
+                user_screenshots=[b"hud"],
+                player_profile=PlayerProfile(),
+            )
+
+            result = agent.execute(state)
+
+        assert result.profile_updates == []
+        assert result.trace[0].action == "vision_unavailable"
 
 
 class TestAnalysisAgent:
@@ -155,7 +279,32 @@ class TestWikiAgent:
         assert len(result.retrieved_docs) == 1
         assert result.retrieved_docs[0].source == "wiki"
         assert result.identified_entities == ["虎先锋"]
-        assert result.trace[0].action == "deterministic_wiki_search"
+        assert result.trace[0].action.startswith("wiki_search")
+
+    def test_execute_falls_back_to_exact_lookup_when_entity_query_search_is_empty(self):
+        exact_match = {
+            "entity": "虎先锋",
+            "text": "虎先锋共有多种高威胁招式，包括乌鸦坐飞机、血龙卷和虎突猛进。",
+            "url": "http://wiki/tiger-vanguard",
+        }
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None), patch(
+            "src.agents.wiki_agent.infer_wiki_entity", return_value="虎先锋"
+        ), patch("src.agents.wiki_agent.wiki_search", return_value=[]), patch(
+            "src.agents.wiki_agent.entity_lookup", return_value=exact_match
+        ):
+            agent = WikiAgent(DUMMY_CONFIG)
+            state = make_state("虎先锋有几个大招")
+
+            result = agent.execute(state)
+
+        assert result.identified_entities == ["虎先锋"]
+        assert len(result.retrieved_docs) == 1
+        assert result.retrieved_docs[0].url == "http://wiki/tiger-vanguard"
+        assert [event.action for event in result.trace[:2]] == [
+            "wiki_search({'query': '虎先锋有几个大招', 'entity': '虎先锋'})",
+            "entity_lookup({'entity': '虎先锋', 'query': '虎先锋有几个大招'})",
+        ]
 
 
 class TestCommunityAgent:
@@ -176,6 +325,8 @@ class TestCommunityAgent:
 
         with patch("src.llm.client.LLMClient.__init__", return_value=None), patch(
             "src.agents.community_agent.nga_search", side_effect=fake_nga_search
+        ), patch("src.agents.community_agent.bilibili_search", return_value=[]), patch(
+            "src.agents.community_agent.reddit_search", return_value=[]
         ):
             agent = CommunityAgent(DUMMY_CONFIG)
             state = make_state("虎先锋那个招怎么躲？", chapter=1)
@@ -184,6 +335,8 @@ class TestCommunityAgent:
             result = agent.execute(state)
 
         assert len(result.retrieved_docs) == 1
+        assert any(event.action.startswith("query_rewrite") for event in result.trace)
+        assert any(event.action.startswith("nga_search") for event in result.trace)
 
 
 class TestSynthesisAgent:
@@ -215,6 +368,35 @@ class TestSynthesisAgent:
         assert len(result.citations) == 1
         assert result.trace[0].action == "synthesis_llm"
 
+    def test_execute_fact_lookup_uses_fact_answer_format(self):
+        docs = [
+            make_doc(
+                "虎先锋共有多种高威胁招式，包括血龙卷与虎突猛进。",
+                source="wiki",
+                chapter=2,
+                url="http://wiki/1",
+            )
+        ]
+
+        class FakeLLM:
+            def complete(self, messages, system=""):
+                assert "## 直接结论" in system
+                assert "针对你的 build 的建议" not in system
+                return "## 直接结论\n- 虎先锋至少有多种高威胁大招。\n\n## 依据\n- wiki 已列出血龙卷与虎突猛进。"
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None):
+            agent = SynthesisAgent(DUMMY_CONFIG)
+            agent.llm = FakeLLM()
+            state = make_state("虎先锋有几个大招？")
+            state.workflow = "fact_lookup"
+            state.retrieved_docs = docs
+
+            result = agent.execute(state)
+
+        assert "## 直接结论" in result.final_answer
+        assert "## 依据" in result.final_answer
+        assert "## 针对你的 build 的建议" not in result.final_answer
+
     def test_execute_falls_back_to_extractive_summary_when_llm_fails(self):
         docs = [
             make_doc(
@@ -244,6 +426,36 @@ class TestSynthesisAgent:
         assert "http://nga/1" in result.final_answer
         assert result.trace[0].action == "synthesis_fallback"
 
+    def test_execute_fact_lookup_fallback_uses_fact_sections(self):
+        docs = [
+            make_doc(
+                "虎先锋招式包括血龙卷、虎突猛进和卧虎石。",
+                source="wiki",
+                chapter=2,
+                url="http://wiki/1",
+            )
+        ]
+
+        class FailingLLM:
+            def complete(self, messages, system=""):
+                raise RuntimeError("provider error")
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None):
+            agent = SynthesisAgent(DUMMY_CONFIG)
+            agent.llm = FailingLLM()
+            state = make_state("虎先锋有几个大招？")
+            state.workflow = "fact_lookup"
+            state.retrieved_docs = docs
+
+            result = agent.execute(state)
+
+        assert "## 直接结论" in result.final_answer
+        assert "## 依据" in result.final_answer
+        assert "## 针对你的 build 的建议" not in result.final_answer
+        assert "provider error" in result.final_answer
+        assert "[原文](http://wiki/1)" in result.final_answer
+        assert "（http://wiki/1）" not in result.final_answer
+
     def test_execute_returns_no_results_message_without_docs(self):
         with patch("src.llm.client.LLMClient.__init__", return_value=None):
             agent = SynthesisAgent(DUMMY_CONFIG)
@@ -267,6 +479,8 @@ class TestSynthesisAgent:
 
         with patch("src.llm.client.LLMClient.__init__", return_value=None), patch(
             "src.agents.community_agent.nga_search", return_value=docs
+        ), patch("src.agents.community_agent.bilibili_search", return_value=docs), patch(
+            "src.agents.community_agent.reddit_search", return_value=[]
         ):
             agent = CommunityAgent(DUMMY_CONFIG)
             state = make_state("虎先锋怎么打？", chapter=1)

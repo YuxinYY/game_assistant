@@ -5,6 +5,7 @@ The test avoids live network calls by stubbing retrieval and LLM completion.
 
 from unittest.mock import patch
 
+from src.agents.profile_agent import ProfileAgent
 from src.core.orchestrator import Orchestrator
 from src.core.state import Document, PlayerProfile
 
@@ -58,7 +59,9 @@ def test_text_query_pipeline_returns_answer_and_citations():
         "src.llm.client.LLMClient.complete", new=_fake_complete
     ), patch("src.agents.wiki_agent.wiki_search", return_value=wiki_docs), patch(
         "src.agents.community_agent.QueryRewriter.rewrite", return_value=["虎先锋 怎么打"]
-    ), patch("src.agents.community_agent.nga_search", return_value=nga_docs):
+    ), patch("src.agents.community_agent.nga_search", return_value=nga_docs), patch(
+        "src.agents.community_agent.bilibili_search", return_value=[]
+    ), patch("src.agents.community_agent.reddit_search", return_value=[]):
         orchestrator = Orchestrator(DUMMY_CONFIG)
         state = orchestrator.run("虎先锋那个招怎么躲？", PlayerProfile(chapter=1))
 
@@ -68,3 +71,30 @@ def test_text_query_pipeline_returns_answer_and_citations():
     assert state.final_answer
     assert "TODO" not in state.final_answer
     assert "虎跃斩" in state.final_answer
+
+
+def test_screenshot_only_flow_updates_profile_without_routing():
+    def fake_profile_execute(self, state):
+        state.player_profile.chapter = 2
+        state.profile_updates = [
+            {
+                "field": "chapter",
+                "old_value": 1,
+                "new_value": 2,
+                "source": "screenshot:combat_hud",
+                "confidence": 0.9,
+            }
+        ]
+        return state
+
+    with patch("src.llm.client.LLMClient.__init__", return_value=None), patch.object(
+        ProfileAgent,
+        "execute",
+        new=fake_profile_execute,
+    ):
+        orchestrator = Orchestrator(DUMMY_CONFIG)
+        state = orchestrator.run("", PlayerProfile(chapter=1), screenshots=[b"img"])
+
+    assert state.workflow == "profile_update"
+    assert state.player_profile.chapter == 2
+    assert state.profile_updates[0]["field"] == "chapter"

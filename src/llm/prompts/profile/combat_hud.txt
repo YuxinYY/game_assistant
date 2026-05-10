@@ -1,6 +1,7 @@
 你在解析《黑神话：悟空》的战斗 HUD 截图，用于更新玩家画像。
 
 尽量识别这些字段；看不清就返回 null 或空数组，不要猜：
+- current_boss: 如果画面里清楚显示了当前 boss 名，就提取；否则返回 null
 - chapter: 1-6
 - build: dodge / parry / spell / hybrid
 - staff_level: 1-5
@@ -11,6 +12,7 @@
 
 只返回 JSON：
 {
+  "current_boss": null,
   "chapter": 1,
   "build": "dodge",
   "staff_level": 1,

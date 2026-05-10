@@ -4,8 +4,8 @@ Responsible for: "这是什么招式" → structured entity identification.
 """
 
 from src.agents.base_agent import BaseAgent, Tool
-from src.core.state import AgentState
-from src.tools.search import wiki_search, entity_lookup
+from src.core.state import AgentState, Document
+from src.tools.search import wiki_search, entity_lookup, infer_wiki_entity
 
 
 class _WikiSearch(Tool):
@@ -20,8 +20,8 @@ class _EntityLookup(Tool):
     name = "entity_lookup"
     description = "精确查找某个实体（boss名、招式名）的 wiki 条目"
 
-    def __call__(self, entity: str) -> dict:
-        return entity_lookup(entity)
+    def __call__(self, entity: str, query: str = "") -> dict:
+        return entity_lookup(entity, query=query)
 
 
 class WikiAgent(BaseAgent):
@@ -32,25 +32,79 @@ class WikiAgent(BaseAgent):
         return [_WikiSearch(), _EntityLookup()]
 
     def execute(self, state: AgentState) -> AgentState:
-        docs = wiki_search(state.user_query)
-        state.retrieved_docs = _merge_docs(state.retrieved_docs, docs)
-
-        entities = _extract_entities(docs)
-        state.identified_entities = _merge_entities(state.identified_entities, entities)
-
-        self._trace(
-            state,
-            0,
-            "deterministic_wiki_search",
-            str(
-                {
-                    "query": state.user_query,
-                    "doc_count": len(docs),
-                    "entities": entities,
-                }
-            ),
+        self._did_wiki_search = False
+        self._looked_up_entities: set[str] = set()
+        self._query_entity = infer_wiki_entity(state.user_query)
+        if self._query_entity:
+            state.identified_entities = _merge_entities(state.identified_entities, [self._query_entity])
+        initial_context = (
+            "目标: 识别用户问题里的 boss/招式实体，并补充 wiki 依据。\n"
+            "优先用 wiki_search 找候选文档；只有在已经识别到实体但需要精确条目时才用 entity_lookup。"
         )
-        return state
+        return self.react_loop(state, initial_context)
+
+    def _decide(self, context: str, state: AgentState) -> tuple[str, str, dict]:
+        primary_entity = self._primary_entity(state)
+        wiki_docs = [doc for doc in state.retrieved_docs if doc.source == "wiki"]
+
+        if not self._did_wiki_search:
+            return "先搜索 wiki 候选文档", "wiki_search", {"query": state.user_query, "entity": primary_entity}
+
+        if not wiki_docs and primary_entity and primary_entity not in self._looked_up_entities:
+            return "候选搜索为空，改用实体精确查找", "entity_lookup", {"entity": primary_entity, "query": state.user_query}
+
+        return super()._decide(context, state)
+
+    def _apply_tool_result(self, state: AgentState, action_name: str, action_args: dict, tool_result) -> None:
+        if action_name == "wiki_search":
+            docs = tool_result if isinstance(tool_result, list) else []
+            entity_hint = action_args.get("entity")
+            if entity_hint:
+                state.identified_entities = _merge_entities(state.identified_entities, [entity_hint])
+            state.retrieved_docs = _merge_docs(state.retrieved_docs, docs)
+            entities = _extract_entities(docs)
+            state.identified_entities = _merge_entities(state.identified_entities, entities)
+            self._did_wiki_search = True
+            return
+
+        if action_name == "entity_lookup" and isinstance(tool_result, dict):
+            entity = tool_result.get("entity") or action_args.get("entity")
+            if entity:
+                self._looked_up_entities.add(entity)
+                state.identified_entities = _merge_entities(state.identified_entities, [entity])
+            if tool_result.get("text") and tool_result.get("url"):
+                doc = Document(
+                    text=tool_result["text"],
+                    source="wiki",
+                    url=tool_result["url"],
+                    entity=entity,
+                    metadata={"author": "wiki_exact_lookup"},
+                )
+                state.retrieved_docs = _merge_docs(state.retrieved_docs, [doc])
+
+    def _fallback_decide(self, context: str, state: AgentState) -> tuple[str, str, dict]:
+        if not self._did_wiki_search:
+            entity = self._primary_entity(state)
+            return "先搜索 wiki 候选文档", "wiki_search", {"query": state.user_query, "entity": entity}
+
+        if (
+            self._primary_entity(state)
+            and self._primary_entity(state) not in self._looked_up_entities
+            and not any(
+                doc.source == "wiki" and doc.entity == self._primary_entity(state)
+                for doc in state.retrieved_docs
+            )
+        ):
+            return "补一次实体精确查找", "entity_lookup", {"entity": self._primary_entity(state), "query": state.user_query}
+
+        return "已有足够 wiki 证据", "FINISH", {}
+
+    def _primary_entity(self, state: AgentState) -> str:
+        if self._query_entity:
+            return self._query_entity
+        if len(state.identified_entities) == 1:
+            return state.identified_entities[0]
+        return ""
 
 
 def _extract_entities(docs) -> list[str]:

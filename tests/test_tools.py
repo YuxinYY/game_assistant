@@ -35,6 +35,11 @@ class TestConsensus:
 
 
 class TestSpoilerFilter:
+    def test_skips_filter_when_chapter_is_unset(self):
+        docs = [make_doc("推荐用广智", chapter=3)]
+        filtered = apply_spoiler_filter(docs, max_chapter=None)
+        assert len(filtered) == 1
+
     def test_removes_chapter3_content_for_chapter1_player(self):
         docs = [
             make_doc("推荐用广智", chapter=3),

@@ -2,6 +2,7 @@
 Targeted tests for provider selection and Groq text completion support.
 """
 
+import src.llm.client as llm_client_module
 from src.llm.client import LLMClient
 
 
@@ -18,6 +19,8 @@ def _clear_llm_env(monkeypatch):
     for name in (
         "LLM_PROVIDER",
         "LLM_MODEL",
+        "VLM_PROVIDER",
+        "VLM_MODEL",
         "GROQ_MODEL",
         "GROQ_API_KEY",
         "ANTHROPIC_API_KEY",
@@ -80,3 +83,45 @@ class TestLLMClient:
             "role": "user",
             "content": "虎先锋怎么打？",
         }
+
+    def test_vision_falls_back_to_anthropic_when_text_provider_is_groq(self, monkeypatch):
+        _clear_llm_env(monkeypatch)
+        monkeypatch.setenv("LLM_PROVIDER", "groq")
+        monkeypatch.setenv("GROQ_API_KEY", "groq-key")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+
+        class FakeAnthropicClient:
+            def __init__(self, api_key):
+                self.api_key = api_key
+
+        class FakeAnthropicModule:
+            Anthropic = FakeAnthropicClient
+
+        monkeypatch.setattr(llm_client_module, "anthropic", FakeAnthropicModule)
+
+        client = LLMClient(DUMMY_CONFIG)
+
+        assert client.provider == "groq"
+        assert client.vision_provider == "anthropic"
+        assert client.supports_vision() is True
+
+    def test_vision_uses_explicit_vlm_provider(self, monkeypatch):
+        _clear_llm_env(monkeypatch)
+        monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+        monkeypatch.setenv("VLM_PROVIDER", "anthropic")
+        monkeypatch.setenv("VLM_MODEL", "claude-vision-test")
+
+        class FakeAnthropicClient:
+            def __init__(self, api_key):
+                self.api_key = api_key
+
+        class FakeAnthropicModule:
+            Anthropic = FakeAnthropicClient
+
+        monkeypatch.setattr(llm_client_module, "anthropic", FakeAnthropicModule)
+
+        client = LLMClient(DUMMY_CONFIG)
+
+        assert client.vision_provider == "anthropic"
+        assert client.vision_model == "claude-vision-test"

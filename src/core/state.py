@@ -41,9 +41,9 @@ class TraceEvent:
 
 @dataclass
 class PlayerProfile:
-    chapter: int = 1
-    build: str = "dodge"   # "dodge" | "parry" | "spell" | "hybrid"
-    staff_level: int = 1
+    chapter: Optional[int] = None
+    build: Optional[str] = None   # "dodge" | "parry" | "spell" | "hybrid"
+    staff_level: Optional[int] = None
     equipped_spirit: Optional[str] = None
     equipped_armor: List[str] = field(default_factory=list)
     equipped_spells: List[str] = field(default_factory=list)
@@ -52,9 +52,12 @@ class PlayerProfile:
     unlocked_transformations: List[str] = field(default_factory=list)
 
     def to_context_string(self) -> str:
+        chapter = f"第{self.chapter}章" if self.chapter is not None else "未设置"
+        build = self.build or "未设置"
+        staff_level = f"Lv.{self.staff_level}" if self.staff_level is not None else "未设置"
         spirit = self.equipped_spirit or "无"
         return (
-            f"章节: 第{self.chapter}章 | 流派: {self.build} | 棍法: Lv.{self.staff_level} | "
+            f"章节: {chapter} | 流派: {build} | 棍法: {staff_level} | "
             f"精魄: {spirit} | 披挂: {self.equipped_armor or '无'} | 装备法术: {self.equipped_spells or '无'} | "
             f"技能: {self.unlocked_skills or '无'} | "
             f"法术: {self.unlocked_spells or '无'} | "

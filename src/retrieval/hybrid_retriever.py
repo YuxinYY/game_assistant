@@ -3,33 +3,85 @@ Hybrid retriever: fuses dense (ChromaDB) + sparse (BM25) results via Reciprocal 
 Singleton pattern so the index loads once per process.
 """
 
+import logging
 import pickle
+import re
 from pathlib import Path
 from typing import Any, Optional
 from src.core.state import Document
+from src.retrieval.reranker import LLMReranker
 
 _retriever_instance = None
 DOCUMENT_FILTER_FIELDS = {"text", "source", "url", "chapter", "entity", "credibility", "post_date"}
+LOGGER = logging.getLogger(__name__)
+CHINESE_QUERY_STOPWORDS = (
+    "那个",
+    "这个",
+    "如何",
+    "怎么",
+    "什么",
+    "一下",
+    "一下子",
+    "打法",
+    "招式",
+    "有几个",
+    "几个",
+    "有哪些",
+    "都有哪些",
+    "有什么",
+    "都有什么",
+    "这一招",
+    "这招",
+    "的招",
+    "可以",
+    "需要",
+    "请问",
+    "吗",
+    "呢",
+    "呀",
+    "啊",
+    "吧",
+    "了",
+    "的",
+    "躲避",
+    "怎么躲",
+    "怎么打",
+    "躲",
+    "打",
+)
+CHINESE_QUERY_KEYWORDS = (
+    "大招",
+    "蓄力",
+    "闪避",
+    "躲避",
+    "连招",
+    "技能",
+    "法术",
+    "变身",
+    "攻略",
+)
 
 
 def get_retriever(config: dict | None = None) -> "HybridRetriever":
     global _retriever_instance
     if _retriever_instance is None:
-        import yaml
         if config is None:
-            with open("config.yaml") as f:
-                config = yaml.safe_load(f)
+            from src.core.orchestrator import load_config
+
+            config = load_config()
         _retriever_instance = HybridRetriever(config)
     return _retriever_instance
 
 
 class HybridRetriever:
     def __init__(self, config: dict):
+        self.config = config
         self.cfg = config["retrieval"]
         self._chroma = None
         self._bm25 = None
         self._bm25_documents: list[dict[str, Any]] | None = None
         self._bm25_loaded = False
+        self._reranker: LLMReranker | None = None
 
     @property
     def chroma(self):
@@ -51,16 +103,59 @@ class HybridRetriever:
             self._load_bm25()
         return self._bm25_documents or []
 
+    @property
+    def reranker(self) -> LLMReranker:
+        if self._reranker is None:
+            llm_client = None
+            if isinstance(self.config, dict) and "llm" in self.config:
+                try:
+                    from src.llm.client import LLMClient
+
+                    llm_client = LLMClient(self.config)
+                except Exception:
+                    llm_client = None
+            self._reranker = LLMReranker(llm_client)
+        return self._reranker
+
     def search(
         self,
         query: str,
         top_k: int = 10,
         filters: dict | None = None,
     ) -> list[Document]:
-        dense = self._dense_search(query, top_k * 2, filters)
-        sparse = self._sparse_search(query, top_k * 2, filters)
-        fused = _reciprocal_rank_fusion(dense, sparse, top_k=top_k)
-        return fused
+        candidate_k = max(top_k * 2, int(self.cfg.get("rerank_top_k", top_k)))
+        try:
+            dense = self._dense_search(query, candidate_k, filters)
+        except Exception as exc:
+            LOGGER.warning("Dense retrieval failed for query %r: %s", query, exc)
+            dense = []
+
+        try:
+            sparse = self._sparse_search(query, candidate_k, filters)
+        except Exception as exc:
+            LOGGER.warning("Sparse retrieval failed for query %r: %s", query, exc)
+            sparse = []
+
+        fused = _reciprocal_rank_fusion(dense, sparse, top_k=candidate_k)
+        if not fused:
+            return []
+
+        rerank_window = max(top_k, int(self.cfg.get("rerank_top_k", candidate_k)))
+        candidates = fused[:rerank_window]
+        reranked = self.reranker.rerank(query, candidates, top_k=min(top_k, len(candidates)))
+
+        if len(reranked) >= top_k:
+            return reranked[:top_k]
+
+        seen_urls = {doc.url for doc in reranked}
+        for doc in fused[rerank_window:]:
+            if len(reranked) >= top_k:
+                break
+            if doc.url in seen_urls:
+                continue
+            seen_urls.add(doc.url)
+            reranked.append(doc)
+        return reranked[:top_k]
 
     def _dense_search(self, query: str, top_k: int, filters) -> list[Document]:
         if self.chroma is None:
@@ -74,7 +169,7 @@ class HybridRetriever:
     def _sparse_search(self, query: str, top_k: int, filters) -> list[Document]:
         if self.bm25 is None or not self.bm25_documents:
             return []
-        tokens = query.split()
+        tokens = _tokenize_query(query)
         if not tokens:
             return []
         scores = self.bm25.get_scores(tokens)
@@ -180,6 +275,51 @@ def _chunk_to_doc(chunk: dict[str, Any]) -> Document:
         post_date=chunk.get("post_date"),
         metadata=chunk.get("metadata", {}),
     )
+
+
+def _tokenize_query(query: str) -> list[str]:
+    cleaned = re.sub(r"[\u3000\s]+", " ", query).strip()
+    if not cleaned:
+        return []
+
+    tokens: list[str] = []
+    for raw_token in re.split(r"\s+", cleaned):
+        if not raw_token:
+            continue
+        tokens.extend(_normalize_query_token(raw_token))
+
+    return list(dict.fromkeys(token for token in tokens if token))
+
+
+def _normalize_query_token(token: str) -> list[str]:
+    if not re.search(r"[\u4e00-\u9fff]", token):
+        return [token]
+
+    normalized = re.sub(r"[，。？！、,:;!?.（）()【】\[\]\"'`]+", " ", token)
+    for stopword in sorted(CHINESE_QUERY_STOPWORDS, key=len, reverse=True):
+        normalized = normalized.replace(stopword, " ")
+
+    cjk_tokens: list[str] = []
+    for chunk in normalized.split():
+        for part in _split_cjk_keywords(chunk):
+            if part and re.search(r"[\u4e00-\u9fffA-Za-z0-9]", part):
+                cjk_tokens.append(part)
+
+    return cjk_tokens or [token]
+
+
+def _split_cjk_keywords(token: str) -> list[str]:
+    for keyword in CHINESE_QUERY_KEYWORDS:
+        if keyword in token and token != keyword:
+            left, right = token.split(keyword, 1)
+            parts: list[str] = []
+            if left:
+                parts.extend(_split_cjk_keywords(left))
+            parts.append(keyword)
+            if right:
+                parts.extend(_split_cjk_keywords(right))
+            return parts
+    return [token]
 
 
 def _chroma_results_to_docs(results: dict) -> list[Document]:

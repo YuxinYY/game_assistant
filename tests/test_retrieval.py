@@ -2,7 +2,9 @@
 Targeted tests for retrieval degradation and BM25 document mapping.
 """
 
+from src.core.state import Document
 from src.retrieval.hybrid_retriever import HybridRetriever, _build_chroma_where
+from src.retrieval.query_rewriter import QueryRewriter
 
 
 class FakeBM25:
@@ -74,6 +76,103 @@ def test_sparse_search_returns_ranked_and_filtered_documents():
     assert results[0].url == "http://nga/2"
 
 
+def test_sparse_search_tokenizes_natural_chinese_query_without_spaces():
+    captured = {}
+
+    class CapturingBM25:
+        def get_scores(self, tokens):
+            captured["tokens"] = tokens
+            return [1.0]
+
+    retriever = HybridRetriever(DUMMY_CONFIG)
+    retriever._bm25_loaded = True
+    retriever._bm25 = CapturingBM25()
+    retriever._bm25_documents = [
+        {
+            "text": "虎先锋 蓄力 招式 躲避",
+            "source": "wiki",
+            "url": "http://wiki/tiger-charge",
+            "chapter": 2,
+            "entity": "虎先锋",
+            "metadata": {},
+        }
+    ]
+
+    results = retriever._sparse_search(
+        "虎先锋那个蓄力的招怎么躲？",
+        top_k=1,
+        filters={"source": "wiki"},
+    )
+
+    assert captured["tokens"] == ["虎先锋", "蓄力"]
+    assert len(results) == 1
+    assert results[0].url == "http://wiki/tiger-charge"
+
+
+def test_sparse_search_tokenizes_sticky_chinese_terms():
+    captured = {}
+
+    class CapturingBM25:
+        def get_scores(self, tokens):
+            captured["tokens"] = tokens
+            return [1.0]
+
+    retriever = HybridRetriever(DUMMY_CONFIG)
+    retriever._bm25_loaded = True
+    retriever._bm25 = CapturingBM25()
+    retriever._bm25_documents = [
+        {
+            "text": "虎先锋 蓄力 招式 躲避",
+            "source": "wiki",
+            "url": "http://wiki/tiger-charge",
+            "chapter": 2,
+            "entity": "虎先锋",
+            "metadata": {},
+        }
+    ]
+
+    retriever._sparse_search(
+        "虎先锋蓄力招式",
+        top_k=1,
+        filters={"source": "wiki"},
+    )
+
+    assert captured["tokens"] == ["虎先锋", "蓄力"]
+
+
+def test_sparse_search_tokenizes_count_questions_with_entity_names():
+    captured = {}
+
+    class CapturingBM25:
+        def get_scores(self, tokens):
+            captured["tokens"] = tokens
+            return [1.0]
+
+    retriever = HybridRetriever(DUMMY_CONFIG)
+    retriever._bm25_loaded = True
+    retriever._bm25 = CapturingBM25()
+    retriever._bm25_documents = [
+        {
+            "text": "虎先锋 招式 乌鸦坐飞机 血龙卷 虎突猛进",
+            "source": "wiki",
+            "url": "http://wiki/tiger-ultimate",
+            "chapter": 2,
+            "entity": "虎先锋",
+            "metadata": {},
+        }
+    ]
+
+    results = retriever._sparse_search(
+        "虎先锋有几个大招",
+        top_k=1,
+        filters={"source": "wiki", "entity": "虎先锋"},
+    )
+
+    assert captured["tokens"] == ["虎先锋", "大招"]
+    assert len(results) == 1
+    assert results[0].url == "http://wiki/tiger-ultimate"
+
+
 def test_search_falls_back_to_dense_results_when_sparse_is_unavailable(monkeypatch):
     retriever = HybridRetriever(DUMMY_CONFIG)
 
@@ -90,6 +189,26 @@ def test_search_falls_back_to_dense_results_when_sparse_is_unavailable(monkeypat
 
     assert len(results) == 1
     assert results[0].url == "http://wiki/1"
+
+
+def test_search_falls_back_to_sparse_results_when_dense_errors(monkeypatch):
+    retriever = HybridRetriever(DUMMY_CONFIG)
+    sparse_doc = Document(
+        text="虎先锋蓄力招可侧闪。",
+        source="nga",
+        url="http://nga/charge",
+    )
+
+    def raise_dense_error(query, top_k, filters):
+        raise RuntimeError("Error loading hnsw index")
+
+    monkeypatch.setattr(retriever, "_dense_search", raise_dense_error)
+    monkeypatch.setattr(retriever, "_sparse_search", lambda query, top_k, filters: [sparse_doc])
+
+    results = retriever.search("虎先锋那个蓄力的招怎么躲？", top_k=1, filters={"source": "nga"})
+
+    assert len(results) == 1
+    assert results[0].url == "http://nga/charge"
 
 
 def test_build_chroma_where_wraps_multiple_filters_in_and_clause():
@@ -145,3 +264,65 @@ def test_sparse_search_can_filter_on_metadata_fields():
 
     assert len(results) == 1
     assert results[0].url == "http://wiki/en"
+
+
+def test_query_rewriter_parses_llm_generated_queries():
+    class FakeLLM:
+        def complete(self, messages, system=""):
+            return '{"queries": ["Tiger Vanguard guide", "how to beat Tiger Vanguard"]}'
+
+    rewriter = QueryRewriter(FakeLLM())
+
+    queries = rewriter.rewrite("How do I beat Tiger Vanguard?", known_entities=["Tiger Vanguard"])
+
+    assert "Tiger Vanguard guide" in queries
+    assert "how to beat Tiger Vanguard" in queries
+
+
+def test_query_rewriter_salvages_incomplete_json_lines():
+    class FakeLLM:
+        def complete(self, messages, system=""):
+            return '\n'.join([
+                '{"queries": [',
+                '"虎先锋蓄力招怎么躲",',
+                '"虎先锋蓄力技巧",',
+                '"如何躲避虎先锋蓄力"',
+            ])
+
+    rewriter = QueryRewriter(FakeLLM())
+
+    queries = rewriter.rewrite("虎先锋那个蓄力的招怎么躲？")
+
+    assert "虎先锋蓄力招怎么躲" in queries
+    assert "虎先锋蓄力技巧" in queries
+    assert '{"queries": [' not in queries
+
+
+def test_search_applies_reranking_to_fused_candidates(monkeypatch):
+    retriever = HybridRetriever(DUMMY_CONFIG)
+    retriever._bm25_loaded = True
+    retriever._bm25 = FakeBM25([])
+    retriever._bm25_documents = []
+
+    off_topic = Document(
+        text="General movement tips with no Tiger Vanguard detail.",
+        source="wiki",
+        url="http://wiki/off-topic",
+        entity="广智",
+        metadata={"title": "General Tips"},
+    )
+    on_topic = Document(
+        text="Tiger Vanguard guide with dodge timing and spinning kick punish.",
+        source="wiki",
+        url="http://wiki/tiger",
+        entity="Tiger Vanguard",
+        metadata={"title": "Tiger Vanguard"},
+    )
+
+    monkeypatch.setattr(retriever, "_dense_search", lambda query, top_k, filters: [off_topic, on_topic])
+    monkeypatch.setattr(retriever, "_sparse_search", lambda query, top_k, filters: [])
+
+    results = retriever.search("Tiger Vanguard guide", top_k=1, filters={"source": "wiki"})
+
+    assert len(results) == 1
+    assert results[0].url == "http://wiki/tiger"

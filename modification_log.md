@@ -9,10 +9,10 @@
 
 ## Current Decision
 
-- `BaseAgent._decide()` is intentionally deferred for now.
-- Reason: implementing `_decide()` alone would not make the pipeline usable yet; it also requires provider-compatible tool calling, structured tool output handling, and state write-back from ReAct observations.
-- Near-term priority is to replace ReAct-dependent execution in `WikiAgent` and `CommunityAgent` with deterministic retrieval that writes real results into `AgentState`.
-- ReAct and `_decide()` will be revisited only after the MVP pipeline can run end-to-end on a normal text query.
+- `BaseAgent._decide()` is now implemented as a provider-agnostic JSON action planner on top of normal chat completion.
+- `WikiAgent`, `CommunityAgent`, and `AnalysisAgent` now write tool results back into `AgentState` through the shared ReAct loop instead of bypassing it with deterministic-only execution.
+- Query rewriting and reranking are now active runtime features instead of placeholders.
+- Remaining work should focus on expanding community sources and stabilizing screenshot/VLM behavior rather than rebuilding the core agent loop again.
 
 ## Step Plan
 
@@ -24,7 +24,7 @@
 | 4 | Replace ReAct-dependent WikiAgent and CommunityAgent execution with deterministic retrieval that updates AgentState | src/agents/wiki_agent.py, src/agents/community_agent.py, scripts/chunk_and_clean.py, tests/test_agents.py, tests/test_data_pipeline.py | targeted agent tests + sample rebuild + orchestrator smoke test | Done |
 | 5 | Make SynthesisAgent produce a real answer with safe fallback and visible citations | src/agents/synthesis_agent.py, tests/test_agents.py | targeted synthesis tests + orchestrator smoke test | Done |
 | 6 | Add one MVP smoke test for the minimal text-query pipeline | tests/test_mvp_smoke.py | patched end-to-end smoke test | Done |
-| 7 | Revisit ReAct `_decide()`, tool-use compatibility, BM25 quality, and query rewrite after MVP stability | multiple files | phased tests | Planned |
+| 7 | Restore ReAct `_decide()`, reconnect tool-driven agent execution, and activate query rewrite + rerank | src/agents/base_agent.py, src/agents/wiki_agent.py, src/agents/community_agent.py, src/agents/analysis_agent.py, src/retrieval/query_rewriter.py, src/retrieval/reranker.py, src/retrieval/hybrid_retriever.py, tests/test_agents.py, tests/test_retrieval.py, tests/test_mvp_smoke.py | pytest tests -q | Done |
 
 ## Change Entries
 
@@ -250,3 +250,250 @@
   - The wiki corpus now contains both Chinese BWIKI pages and English IGN boss guides in a shared schema.
   - Pure English wiki queries are now restricted to English wiki chunks, so English questions no longer depend on cross-lingual matching.
   - Existing Chinese wiki data remains available under the same `source="wiki"` path, with language metadata attached during chunking.
+
+### 2026-05-10 Step 7
+
+- Intent: restore the README-level agent autonomy and make retrieval quality less dependent on raw BM25 / dense fusion order.
+- Changes:
+  - Implemented a provider-agnostic JSON action planner in `BaseAgent._decide()` using normal chat completion instead of provider-specific tool-calling.
+  - Extended the shared ReAct loop so tool outputs can be written back into `AgentState` through subclass hooks.
+  - Reconnected `WikiAgent`, `CommunityAgent`, and `AnalysisAgent` to the shared ReAct loop with action fallbacks that keep the pipeline usable even when the model output is malformed or unavailable.
+  - Implemented LLM-backed query rewriting with robust parsing plus stronger rule-based fallback rewrites.
+  - Implemented reranker scoring with LLM scoring first and lexical fallback second, then integrated reranking into `HybridRetriever.search()`.
+  - Updated focused tests and MVP smoke coverage to reflect the restored ReAct path and the new retrieval ranking stage.
+- Files:
+  - src/agents/base_agent.py
+  - src/agents/wiki_agent.py
+  - src/agents/community_agent.py
+  - src/agents/analysis_agent.py
+  - src/retrieval/query_rewriter.py
+  - src/retrieval/reranker.py
+  - src/retrieval/hybrid_retriever.py
+  - tests/test_agents.py
+  - tests/test_retrieval.py
+  - tests/test_mvp_smoke.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_agents.py tests/test_retrieval.py tests/test_mvp_smoke.py -q
+  - 20 passed in 0.95s
+  - pytest tests -q
+  - 53 passed in 2.05s
+- Result:
+  - The runtime path is no longer dependent on deterministic-only retrieval for `WikiAgent` and `CommunityAgent`.
+  - Query rewrite and reranking are now part of the live retrieval path instead of documented but unfinished modules.
+  - The repo is back in sync with the README claim that the system uses a real multi-agent tool loop for core retrieval and analysis stages.
+
+### 2026-05-10 Step 8
+
+- Intent: make the screenshot recognition path usable in the course-demo web app even when the main text model does not support vision.
+- Changes:
+  - Split text-provider and vision-provider resolution inside `LLMClient`, adding optional `VLM_PROVIDER` and `VLM_MODEL` support plus media-type inference for PNG/JPEG/WEBP.
+  - Made screenshot parser stack fail closed: classifier/parsers now return safe defaults on missing vision support or parser exceptions instead of crashing.
+  - Updated `ProfileAgent` to detect unavailable vision capability, trace `vision_unavailable`, and keep state stable when screenshots cannot be parsed.
+  - Updated `Orchestrator` to preprocess screenshots before routing and support the screenshot-only path by returning `workflow="profile_update"` when the user uploads screenshots without a text query.
+  - Updated Streamlit UI to support multi-image upload, a screenshot-only recognition button, and profile-update summaries in the right-side source panel.
+  - Added/updated tests for independent vision-provider resolution, no-vision graceful degradation, and screenshot-only orchestrator smoke coverage.
+- Files:
+  - src/llm/client.py
+  - src/tools/parsers/__init__.py
+  - src/tools/parsers/classifier.py
+  - src/agents/profile_agent.py
+  - src/core/orchestrator.py
+  - app/components/chat_ui.py
+  - app/components/source_panel.py
+  - .env.example
+  - tests/test_llm_client.py
+  - tests/test_agents.py
+  - tests/test_mvp_smoke.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_llm_client.py tests/test_agents.py tests/test_mvp_smoke.py -q
+  - 18 passed in 0.14s
+  - pytest -q (inside the configured project Conda environment)
+  - 57 passed in 1.85s
+- Result:
+  - The app now supports screenshot-only profile updates end to end instead of requiring a text query as a trigger.
+  - Text generation provider choice no longer blocks screenshot parsing, because vision can be configured separately.
+  - Missing vision capability now degrades into a visible, non-crashing user path that preserves the rest of the pipeline.
+
+### 2026-05-10 Step 9
+
+- Intent: eliminate the remaining wiki no-result path for exact boss-name questions like `虎先锋有几个大招` when dense retrieval is down and BM25 tokenization is too narrow.
+- Changes:
+  - Added direct entity inference for wiki queries so `WikiAgent` can seed `identified_entities` from the raw user question before any document is retrieved.
+  - Made `WikiAgent` deterministically do one entity-filtered `wiki_search`, then fall back to `entity_lookup` when that narrow search still returns no wiki docs.
+  - Updated wiki tool lookup so `entity_lookup` no longer depends on BM25 full-text matching; it now reads exact-match wiki chunks straight from indexed chunk metadata first.
+  - Extended Chinese query normalization for count-style phrasing such as `有几个大招`, while preserving the combat keyword `大招` as a usable sparse token.
+  - Added regression coverage for entity-query fallback, direct entity lookup, and count-question tokenization.
+- Files:
+  - src/agents/wiki_agent.py
+  - src/tools/search.py
+  - src/retrieval/hybrid_retriever.py
+  - tests/test_agents.py
+  - tests/test_retrieval.py
+  - tests/test_search_tools.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_agents.py tests/test_retrieval.py tests/test_search_tools.py -q
+  - 30 passed in 1.09s
+  - live backend replay for `虎先锋有几个大招`:
+    - with `PlayerProfile(chapter=1)`: `doc_count=1`, `citation_count=1`, answer now returns spoiler-gated feedback instead of `未找到足够资料`
+    - with `PlayerProfile(chapter=2)`: `doc_count=1`, `citation_count=1`, answer returns a cited虎先锋 wiki response
+- Result:
+  - The failure mode has been shifted from `wiki检索为空` to normal answer generation with citations.
+  - Exact entity lookup is now resilient even when the dense Chroma index is still broken and BM25 cannot match the entity page by raw token overlap.
+  - The remaining limitation on the demo path is now mostly spoiler/profile behavior, not missing retrieval evidence.
+
+### 2026-05-10 Step 10
+
+- Intent: stop applying chapter/build/profile filters when the user has not explicitly filled any profile fields, and remove the legacy placeholder profile that was causing default Chapter 1 gating in the web app.
+- Changes:
+  - Changed `PlayerProfile` defaults so `chapter`, `build`, and `staff_level` start as unset instead of `1/dodge/1`.
+  - Updated `ProfileAgent` and `apply_spoiler_filter()` to skip profile filtering and spoiler gating entirely when chapter is unset.
+  - Updated the Streamlit profile sidebar to support `未设置` values for chapter/build/staff level and added a `清空筛选` action.
+  - Added session-side migration for legacy placeholder profiles so old browser tabs no longer keep the implicit `第1章 + dodge + Lv.1` filters.
+  - Added regression tests for unset-profile behavior in both spoiler filtering and profile-based doc filtering.
+- Files:
+  - src/core/state.py
+  - src/agents/profile_agent.py
+  - src/tools/spoiler_filter.py
+  - app/components/profile_panel.py
+  - app/session.py
+  - tests/test_tools.py
+  - tests/test_agents.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_tools.py tests/test_agents.py tests/test_mvp_smoke.py -q
+  - 24 passed in 1.21s
+  - pytest -q
+  - 66 passed in 1.74s
+  - live backend replay for `虎先锋有几个大招`:
+    - with unset profile: returns a cited wiki answer instead of treating the user as Chapter 1 by default
+    - with explicit `chapter=1`: still behaves as chapter-gated content, as intended
+- Result:
+  - Unfilled profile fields no longer act as hidden filters.
+  - Existing web sessions with the old placeholder profile are migrated away from implicit Chapter 1 gating.
+  - The remaining runtime issues are unrelated to hidden filters: Chroma dense retrieval still logs `Error loading hnsw index`, and Groq can occasionally return `429` rate-limit errors during synthesis.
+
+### 2026-05-10 Step 11
+
+- Intent: stop different Tiger Vanguard questions from collapsing onto the same first wiki chunk and producing the same `乌鸦坐飞机`-biased answer.
+- Changes:
+  - Extended `entity_lookup()` to accept the original user query and rank exact-match wiki chunks inside the same entity by query relevance instead of always returning the first chunk.
+  - Added entity-summary synthesis inside direct lookup so count-style questions can see move counts and move-name lists across multiple Tiger Vanguard chunks.
+  - Updated `WikiAgent` to pass the original question into `entity_lookup`.
+  - Added regression tests covering query-sensitive chunk selection and move-summary generation.
+- Files:
+  - src/tools/search.py
+  - src/agents/wiki_agent.py
+  - tests/test_search_tools.py
+  - tests/test_agents.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_search_tools.py tests/test_agents.py -q
+  - 20 passed in 1.41s
+  - pytest -q
+  - 68 passed in 1.97s
+  - live backend replay:
+    - `虎先锋有几个大招` now retrieves a move-summary document with `可识别招式数量：15`
+    - `虎先锋那个蓄力的大招怎么躲` now no longer falls back to the fixed first wiki chunk; it uses query-ranked exact entity lookup
+- Result:
+  - The old behavior where both questions were effectively answered from the first Tiger Vanguard wiki chunk has been removed.
+  - Remaining quality issues for the second question are now mostly in generation fallback when Groq returns `429`, not in exact wiki evidence selection.
+
+### 2026-05-10 Step 12
+
+- Intent: stop `fact_lookup` and `navigation` questions from inheriting the boss-strategy answer template when they already route to the correct workflow.
+- Changes:
+  - Updated `SynthesisAgent` to choose a workflow-specific prompt file instead of always loading the single shared synthesis prompt.
+  - Added dedicated prompt templates for `fact_lookup` and `navigation` so factual and location questions no longer ask for `build` advice or `招式识别` headings.
+  - Added workflow-specific fallback and no-results formatting so Groq/API failures also preserve the correct answer shape.
+  - Added regression tests to verify that `fact_lookup` uses fact-oriented sections in both normal and fallback paths.
+- Files:
+  - src/agents/synthesis_agent.py
+  - src/llm/prompts/synthesis_fact_lookup.txt
+  - src/llm/prompts/synthesis_navigation.txt
+  - tests/test_agents.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_agents.py -q
+  - 16 passed in 1.98s
+  - pytest -q
+  - 70 passed in 2.36s
+- Result:
+  - Questions like `虎先锋有几个大招` no longer need to render under the strategy-only heading set.
+  - Even when synthesis falls back after provider failure, `fact_lookup` now stays in a fact-summary format instead of reverting to `build/共识度` sections.
+
+### 2026-05-11 Step 13
+
+- Intent: stop wiki count-style answers from presenting community meme move names as if they were clean factual labels, and make source links usable in the web UI.
+- Changes:
+  - Updated `entity_lookup()` summary building so count-style queries now return `页面条目数 + 命名风险 + 统计口径说明` instead of a raw `招式清单`.
+  - Added suspicious move-name detection for entries that look like community戏称/玩梗命名 or whose descriptions contain obvious meme phrases.
+  - Narrowed count-query detection so questions like `那个蓄力的大招怎么躲` are no longer misclassified as `count` queries just because they contain `大招`.
+  - Updated the Streamlit source panel to show clickable `打开原文` links and a clear fallback message when a citation has no URL.
+- Files:
+  - src/tools/search.py
+  - app/components/source_panel.py
+  - tests/test_search_tools.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_search_tools.py tests/test_agents.py -q
+  - 22 passed in 1.24s
+  - pytest -q
+  - 70 passed in 1.81s
+  - live entity lookup check for `虎先锋有几个大招`:
+    - URL remains `https://wiki.biligame.com/wukong/%E8%99%8E%E5%85%88%E9%94%8B`
+    - summary now warns that the page contains community-style move naming and that the count is a page-entry count, not a strict official `大招数`
+- Result:
+  - The system no longer endorses strings like `后撤步7777` as if they were clean official move names in count-style fact answers.
+  - Reviewers can now click through to the original source directly from the web UI instead of only seeing a raw URL string.
+
+### 2026-05-11 Step 14
+
+- Intent: stop move-listing answers like `虎先锋的大招都叫什么` from feeding raw meme-heavy wiki body text into synthesis, and remove the `（URL）` link formatting that caused Streamlit auto-linking to swallow parentheses.
+- Changes:
+  - Added a dedicated move-listing summary path in `entity_lookup()` for questions such as `都叫什么` / `有哪些大招` / `招式名字`, so direct lookup now returns structured move-name summaries instead of the full raw chunk body.
+  - Kept suspicious move entries in a separate downgraded bucket, explicitly warning that quoted lines and community梗 should not be treated as formal move names.
+  - Updated synthesis fallback and citation rendering to use explicit markdown links like `[原文](...)` instead of wrapping bare URLs in Chinese parentheses.
+  - Added regression tests for move-listing summaries and fallback link formatting.
+- Files:
+  - src/tools/search.py
+  - src/agents/synthesis_agent.py
+  - tests/test_search_tools.py
+  - tests/test_agents.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_search_tools.py tests/test_agents.py -q
+  - 23 passed in 1.04s
+  - pytest -q
+  - 71 passed in 1.87s
+  - live direct lookup check:
+    - `虎先锋的大招都叫什么` no longer returns raw chunk body that contains quoted meme lines like `老子起兵能源城之日`
+    - fallback/citation links now render as explicit markdown links instead of `（URL）`
+- Result:
+  - The remaining issue is not an inherent model limitation; it was mainly caused by feeding noisy source text and ambiguous link formatting into the final answer layer.
+  - Move-listing answers are now structurally constrained before synthesis, so the model has much less opportunity to mistake description quotes for move names.
+
+### 2026-05-11 Step 15
+
+- Intent: stop fact-enumeration questions like `虎先锋的大招都叫什么` from being routed into the `boss_strategy` workflow, which was reintroducing strategy-style synthesis and community-analysis stages even after the wiki summary was cleaned up.
+- Changes:
+  - Added a router-level priority rule for fact-shaped listing/count questions such as `几个` / `有哪些` / `都叫什么` / `招式名字`.
+  - Kept action-oriented phrases like `怎么躲` / `怎么打` / `打法` on the `boss_strategy` path so move-counter questions still use the strategy workflow.
+  - Added routing regression tests for count queries, listing queries, dodge queries, and an override case where the LLM returns `boss_strategy` but the query shape should still force `fact_lookup`.
+- Files:
+  - src/core/router.py
+  - tests/test_workflows.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_workflows.py -q
+  - 13 passed in 0.86s
+  - direct orchestrator replay for `虎先锋的大招都叫什么`:
+    - workflow changed from `boss_strategy` to `fact_lookup`
+    - trace now ends at `WikiAgent -> SynthesisAgent` instead of going through `CommunityAgent` / `AnalysisAgent`
+  - pytest -q
+  - 75 passed in 1.63s
+- Result:
+  - The remaining `还是一样` symptom was caused by routing, not by the previous search/synthesis fixes failing to apply.
+  - Fact-enumeration questions now bypass the strategy pipeline and keep the cleaned-up wiki summary shape end to end.

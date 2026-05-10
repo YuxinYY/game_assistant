@@ -13,14 +13,31 @@ def render_source_panel():
         st.info("先提问，这里会显示系统的推理过程。")
         return
 
+    if state.profile_updates:
+        st.subheader("画像更新")
+        for update in state.profile_updates:
+            st.write(
+                f"**{update['field']}**: {update['old_value']} → {update['new_value']}"
+            )
+            if update.get("source"):
+                st.caption(f"来源: {update['source']}")
+
     # --- Citations ---
     st.subheader("引用来源")
     if state.citations:
         for i, cite in enumerate(state.citations, 1):
-            with st.expander(f"[{i}] {cite.source} — {cite.url}"):
+            title = f"[{i}] {cite.source}"
+            if cite.author:
+                title += f" | {cite.author}"
+            with st.expander(title):
+                if cite.url:
+                    st.markdown(f"[打开原文]({cite.url})")
+                    st.caption(cite.url)
+                else:
+                    st.caption("该条引用没有原始 URL")
                 st.write(cite.excerpt)
                 if cite.author:
-                    st.caption(f"作者: {cite.author}")
+                    st.caption(f"作者/站点: {cite.author}")
     else:
         st.caption("无引用")
 
