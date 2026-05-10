@@ -184,3 +184,69 @@
 - Result:
   - The current text-query MVP path is now covered by an automated smoke test.
   - Future changes can be checked against a concrete regression target instead of relying only on manual runs.
+
+### 2026-05-10 Wiki Crawl Refresh
+
+- Intent: make wiki data collection actually runnable again and remove the dependency on the currently unavailable Fextralife origin.
+- Changes:
+  - Replaced the fixed-page Fextralife crawler in `scripts/crawl_bwiki.py` with a BWIKI-based crawler.
+  - Added automatic page discovery from the BWIKI `妖王` and `头目` index pages instead of hard-coding 7 bosses.
+  - Switched detail-page fetching to the MediaWiki parse API for more stable structured extraction.
+  - Added request retry handling for transient wiki-side 5xx/567 failures during page fetches.
+  - Extracted infobox fields, gameplay-relevant sections, move descriptions, and a retrieval-friendly `raw_text` payload for each discovered boss page.
+  - Updated `scripts/chunk_and_clean.py` so sample wiki files are skipped automatically when a real page for the same boss already exists.
+  - Added parser-focused unit tests for index discovery, infobox parsing, move parsing, raw-text synthesis, and sample-file de-duplication.
+- Files:
+  - scripts/crawl_bwiki.py
+  - scripts/chunk_and_clean.py
+  - tests/test_crawl_bwiki.py
+  - tests/test_data_pipeline.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_crawl_bwiki.py tests/test_data_pipeline.py -q
+  - 8 passed in 2.37s
+  - live BWIKI crawl discovered 81 boss pages from index pages (`妖王` + `头目`)
+  - real JSON files written for the full discovered boss set; `data/raw/wiki` now contains 81 real boss pages plus the original sample file
+  - processed chunks rebuild succeeded: `data/processed/chunks.jsonl` with 163 chunks
+  - index rebuild succeeded: `data/indexes/chroma_db`, `data/indexes/bm25_index.pkl`
+  - retrieval smoke test succeeded with entity-filtered wiki hits for `石先锋`, `广智`, and `虎先锋`
+- Result:
+  - The project is no longer blocked by the Fextralife 502 origin failure for wiki collection.
+  - Wiki scraping now aligns with the existing `bwiki` naming and sample-data conventions used elsewhere in the repo.
+  - Newly scraped wiki pages are already integrated into the retrieval layer instead of only sitting in raw-data storage.
+
+### 2026-05-10 English Wiki Extension
+
+- Intent: add an English wiki source that can be retrieved directly by English questions without requiring cross-lingual matching.
+- Changes:
+  - Added `scripts/crawl_ign_wiki.py` to auto-discover boss guide pages from IGN's `Boss_List_and_Guides` index and scrape English boss guide content into the existing wiki raw-data schema.
+  - Updated the wiki chunking pipeline to carry `source_site`, `source_language`, and page title into chunk metadata.
+  - Extended the chunker to prefer English sentence breaks as well as Chinese sentence breaks.
+  - Updated wiki search to auto-apply a language filter for pure English and pure Chinese queries.
+  - Extended retrieval filter handling so metadata fields like `language` work in both Chroma and BM25 paths.
+- Files:
+  - scripts/crawl_ign_wiki.py
+  - scripts/chunk_and_clean.py
+  - src/tools/search.py
+  - src/retrieval/hybrid_retriever.py
+  - tests/test_crawl_ign_wiki.py
+  - tests/test_data_pipeline.py
+  - tests/test_retrieval.py
+  - tests/test_search_tools.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_crawl_ign_wiki.py tests/test_data_pipeline.py tests/test_retrieval.py tests/test_search_tools.py -q
+  - 18 passed in 1.14s
+  - live IGN discovery found 93 boss-guide pages
+  - full IGN crawl completed successfully into `data/raw/wiki`
+  - processed chunk rebuild succeeded: `data/processed/chunks.jsonl` with 1723 chunks
+  - index rebuild succeeded: `data/indexes/chroma_db`, `data/indexes/bm25_index.pkl`
+  - English retrieval smoke test succeeded for:
+    - `How do I beat Tiger Vanguard?`
+    - `Tiger Vanguard spinning kick`
+    - `Where do I find Black Bear Guai?`
+  - retrieved English docs carried `metadata.language=en` and `metadata.author=ign`
+- Result:
+  - The wiki corpus now contains both Chinese BWIKI pages and English IGN boss guides in a shared schema.
+  - Pure English wiki queries are now restricted to English wiki chunks, so English questions no longer depend on cross-lingual matching.
+  - Existing Chinese wiki data remains available under the same `source="wiki"` path, with language metadata attached during chunking.

@@ -22,6 +22,8 @@ CREDIBILITY = {
     "reddit": 0.70,
 }
 
+SENTENCE_BREAK_PATTERN = re.compile(r"[。！？.!?]")
+
 
 def chunk_text(text: str, max_chars: int = MAX_CHUNK_CHARS, overlap: int = OVERLAP_CHARS) -> list[str]:
     """Sliding window chunker by character count. Splits on sentence boundaries when possible."""
@@ -33,9 +35,12 @@ def chunk_text(text: str, max_chars: int = MAX_CHUNK_CHARS, overlap: int = OVERL
     while start < len(text):
         end = min(start + max_chars, len(text))
         # Try to find a sentence break near the end
-        break_pos = text.rfind("。", start, end)
-        if break_pos > start + max_chars // 2:
-            end = break_pos + 1
+        window = text[start:end]
+        break_positions = [match.end() for match in SENTENCE_BREAK_PATTERN.finditer(window)]
+        if break_positions:
+            candidate_end = start + break_positions[-1]
+            if candidate_end > start + max_chars // 2:
+                end = candidate_end
         chunks.append(text[start:end])
         if end >= len(text):
             break
@@ -49,6 +54,9 @@ def process_wiki(file: Path) -> list[dict]:
     chapter = data.get("chapter", 1)
     raw_text = data.get("raw_text") or _synthesize_wiki_text(data)
     chunks = chunk_text(raw_text)
+    source_site = str(data.get("source_site") or "bwiki").strip() or "bwiki"
+    source_language = str(data.get("source_language") or _infer_wiki_language(source_site)).strip()
+    page_title = str(data.get("page_title") or data.get("title") or boss).strip() or boss
     return [
         {
             "text": c,
@@ -58,10 +66,18 @@ def process_wiki(file: Path) -> list[dict]:
             "entity": boss,
             "credibility": CREDIBILITY["wiki"],
             "post_date": None,
-            "metadata": {"author": "bwiki"},
+            "metadata": {
+                "author": source_site,
+                "language": source_language,
+                "title": page_title,
+            },
         }
         for c in chunks if c.strip()
     ]
+
+
+def _infer_wiki_language(source_site: str) -> str:
+    return "en" if source_site.lower() == "ign" else "zh"
 
 
 def _synthesize_wiki_text(data: dict) -> str:
@@ -83,6 +99,42 @@ def _synthesize_wiki_text(data: dict) -> str:
         sections.append(f"打法提示：{tips}")
 
     return " ".join(section.strip() for section in sections if section.strip())
+
+
+def iter_wiki_files(raw_dir: Path = RAW_DIR) -> list[Path]:
+    wiki_dir = raw_dir / "wiki"
+    files = sorted(wiki_dir.glob("*.json"))
+    if not files:
+        return []
+
+    selected: list[Path] = []
+    sample_files: list[Path] = []
+    real_boss_names: set[str] = set()
+
+    for file in files:
+        if file.stem.endswith("_sample"):
+            sample_files.append(file)
+            continue
+        selected.append(file)
+        boss_name = _read_wiki_boss_name(file)
+        if boss_name:
+            real_boss_names.add(boss_name)
+
+    for file in sample_files:
+        boss_name = _read_wiki_boss_name(file)
+        if boss_name and boss_name in real_boss_names:
+            continue
+        selected.append(file)
+
+    return selected
+
+
+def _read_wiki_boss_name(file: Path) -> str:
+    try:
+        data = json.loads(file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return str(data.get("boss_name", "")).strip()
 
 
 def process_nga_jsonl(file: Path) -> list[dict]:
@@ -108,7 +160,7 @@ def process_nga_jsonl(file: Path) -> list[dict]:
 def main():
     all_chunks = []
 
-    for f in (RAW_DIR / "wiki").glob("*.json"):
+    for f in iter_wiki_files(RAW_DIR):
         all_chunks.extend(process_wiki(f))
 
     for f in (RAW_DIR / "nga").glob("*.jsonl"):

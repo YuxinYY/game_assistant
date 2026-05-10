@@ -9,6 +9,7 @@ from typing import Any, Optional
 from src.core.state import Document
 
 _retriever_instance = None
+DOCUMENT_FILTER_FIELDS = {"text", "source", "url", "chapter", "entity", "credibility", "post_date"}
 
 
 def get_retriever(config: dict | None = None) -> "HybridRetriever":
@@ -134,7 +135,7 @@ def _build_chroma_where(filters: dict) -> dict | None:
         if k == "chapter__lte":
             clauses.append({"chapter": {"$lte": v}})
         else:
-            clauses.append({k: {"$eq": v}})
+            clauses.append({_normalize_filter_key(k): {"$eq": v}})
     if not clauses:
         return None
     if len(clauses) == 1:
@@ -150,12 +151,22 @@ def _doc_matches_filters(doc: Document, filters: dict | None) -> bool:
             if doc.chapter is None or doc.chapter > value:
                 return False
             continue
-        field_value = getattr(doc, key, None)
-        if field_value is None and key in doc.metadata:
+        field_value = None
+        if key in DOCUMENT_FILTER_FIELDS:
+            field_value = getattr(doc, key, None)
+        elif key.startswith("meta_"):
+            field_value = doc.metadata.get(key[5:])
+        else:
             field_value = doc.metadata.get(key)
         if field_value != value:
             return False
     return True
+
+
+def _normalize_filter_key(key: str) -> str:
+    if key.startswith("meta_") or key in DOCUMENT_FILTER_FIELDS:
+        return key
+    return f"meta_{key}"
 
 
 def _chunk_to_doc(chunk: dict[str, Any]) -> Document:

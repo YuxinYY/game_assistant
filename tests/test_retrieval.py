@@ -101,3 +101,47 @@ def test_build_chroma_where_wraps_multiple_filters_in_and_clause():
             {"chapter": {"$lte": 2}},
         ]
     }
+
+
+def test_build_chroma_where_maps_unknown_filters_to_metadata_fields():
+    where = _build_chroma_where({"source": "wiki", "language": "en"})
+
+    assert where == {
+        "$and": [
+            {"source": {"$eq": "wiki"}},
+            {"meta_language": {"$eq": "en"}},
+        ]
+    }
+
+
+def test_sparse_search_can_filter_on_metadata_fields():
+    retriever = HybridRetriever(DUMMY_CONFIG)
+    retriever._bm25_loaded = True
+    retriever._bm25 = FakeBM25([1.1, 0.9])
+    retriever._bm25_documents = [
+        {
+            "text": "Tiger Vanguard guide in English.",
+            "source": "wiki",
+            "url": "http://wiki/en",
+            "chapter": 2,
+            "entity": "Tiger Vanguard",
+            "metadata": {"language": "en", "author": "ign"},
+        },
+        {
+            "text": "虎先锋中文攻略。",
+            "source": "wiki",
+            "url": "http://wiki/zh",
+            "chapter": 2,
+            "entity": "虎先锋",
+            "metadata": {"language": "zh", "author": "bwiki"},
+        },
+    ]
+
+    results = retriever._sparse_search(
+        "Tiger Vanguard guide",
+        top_k=2,
+        filters={"source": "wiki", "language": "en"},
+    )
+
+    assert len(results) == 1
+    assert results[0].url == "http://wiki/en"
