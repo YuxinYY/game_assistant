@@ -18,7 +18,7 @@ DUMMY_CONFIG = {
 
 
 def _fake_complete(self, messages, system=""):
-    if "意图分类器" in system:
+    if "意图分类器" in system or "intent classifier" in system.lower():
         return "boss_strategy"
     return (
         "## 招式识别\n"
@@ -98,3 +98,53 @@ def test_screenshot_only_flow_updates_profile_without_routing():
     assert state.workflow == "profile_update"
     assert state.player_profile.chapter == 2
     assert state.profile_updates[0]["field"] == "chapter"
+
+
+def _fake_complete_en(self, messages, system=""):
+    if "意图分类器" in system or "intent classifier" in system.lower():
+        return "boss_strategy"
+    return (
+        "## Move Or Mechanic\n"
+        "- Tiger Vanguard's delayed slam is one of the key punish windows.\n\n"
+        "## Recommendation For Your Build\n"
+        "- Dodge late and punish after the slam recovery (source: wiki http://wiki/en-1)."
+    )
+
+
+def test_english_text_query_pipeline_returns_english_answer_and_citations():
+    wiki_docs = [
+        _make_doc(
+            "Tiger Vanguard's delayed slam leaves a punish window after the recovery.",
+            source="wiki",
+            url="http://wiki/en-1",
+            entity="Tiger Vanguard",
+        )
+    ]
+    reddit_docs = [
+        _make_doc(
+            "Reddit players recommend waiting out the delayed slam before punishing.",
+            source="reddit",
+            url="http://reddit/en-1",
+            entity="Tiger Vanguard",
+        )
+    ]
+
+    with patch("src.llm.client.LLMClient.__init__", return_value=None), patch(
+        "src.llm.client.LLMClient.complete", new=_fake_complete_en
+    ), patch("src.agents.wiki_agent.wiki_search", return_value=wiki_docs), patch(
+        "src.agents.community_agent.QueryRewriter.rewrite", return_value=["how to beat Tiger Vanguard"]
+    ), patch(
+        "src.agents.community_agent.has_indexed_source_documents",
+        side_effect=lambda source, language="": source == "reddit" and language == "en",
+    ), patch("src.agents.community_agent.nga_search", return_value=[]), patch(
+        "src.agents.community_agent.bilibili_search", return_value=[]
+    ), patch("src.agents.community_agent.reddit_search", return_value=reddit_docs):
+        orchestrator = Orchestrator(DUMMY_CONFIG)
+        state = orchestrator.run("How do I beat Tiger Vanguard?", PlayerProfile(chapter=2))
+
+    assert state.workflow == "boss_strategy"
+    assert len(state.retrieved_docs) == 2
+    assert len(state.citations) == 2
+    assert "## Recommendation For Your Build" in state.final_answer
+    assert "## Sources" in state.final_answer
+    assert "Tiger Vanguard" in state.final_answer

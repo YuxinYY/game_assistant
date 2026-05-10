@@ -5,7 +5,14 @@ Targeted tests for chunking and index build prerequisites.
 import json
 
 from scripts.build_indexes import _to_chroma_metadata
-from scripts.chunk_and_clean import chunk_text, iter_wiki_files, process_wiki
+from src.retrieval import index_builder
+from src.retrieval.index_builder import build_chroma, resolve_chroma_dir
+from scripts.chunk_and_clean import (
+    chunk_text,
+    iter_wiki_files,
+    process_reddit_jsonl,
+    process_wiki,
+)
 
 
 def test_chunk_text_returns_single_chunk_for_short_text():
@@ -53,6 +60,47 @@ def test_to_chroma_metadata_flattens_nested_metadata():
     assert metadata["source"] == "nga"
     assert metadata["meta_author"] == "玩家A"
     assert metadata["meta_title"] == "速通心得"
+
+
+def test_build_chroma_resets_persist_dir_before_rebuild(tmp_path):
+    chroma_dir = tmp_path / "chroma_db"
+    chroma_dir.mkdir()
+    stale_file = chroma_dir / "stale.bin"
+    stale_file.write_text("stale", encoding="utf-8")
+
+    count = build_chroma(
+        [
+            {
+                "text": "Tiger Vanguard guide",
+                "source": "wiki",
+                "url": "http://wiki/tiger",
+                "metadata": {"language": "en"},
+            }
+        ],
+        chroma_dir=chroma_dir,
+        collection_name="test_chunks",
+        batch_size=1,
+    )
+
+    assert count == 1
+    assert not stale_file.exists()
+
+
+def test_resolve_chroma_dir_moves_onedrive_windows_paths_to_local_cache(monkeypatch, tmp_path):
+    one_drive_root = tmp_path / "OneDrive"
+    local_app_data = tmp_path / "LocalAppData"
+    requested_path = one_drive_root / "game_assistant" / "data" / "indexes" / "chroma_db"
+
+    monkeypatch.setenv("OneDrive", str(one_drive_root))
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+
+    resolved = resolve_chroma_dir(requested_path)
+
+    if index_builder.os.name == "nt":
+        assert resolved.is_relative_to(local_app_data)
+        assert resolved.name.startswith("chroma_")
+    else:
+        assert resolved == requested_path
 
 
 def test_process_wiki_uses_moves_and_tips_when_raw_text_is_missing(tmp_path):
@@ -124,3 +172,36 @@ def test_iter_wiki_files_skips_sample_when_real_file_exists(tmp_path):
     assert "虎先锋.json" in selected_names
     assert "tiger_vanguard_sample.json" not in selected_names
     assert "guangzhi_sample.json" in selected_names
+
+
+def test_process_reddit_jsonl_preserves_english_metadata_and_entity(tmp_path):
+    reddit_file = tmp_path / "reddit_sample.jsonl"
+    reddit_file.write_text(
+        json.dumps(
+            {
+                "post_id": "reddit_001",
+                "author": "playerA",
+                "title": "Tiger Vanguard delayed slam timing",
+                "content": "Dodge late, then punish after the slam recovery.",
+                "url": "https://reddit.example/post-1",
+                "boss_tags": ["Tiger Vanguard"],
+                "source": "reddit",
+                "language": "en",
+                "timestamp": "2024-09-12",
+                "chapter": 2,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    chunks = process_reddit_jsonl(reddit_file)
+
+    assert len(chunks) == 1
+    assert chunks[0]["source"] == "reddit"
+    assert chunks[0]["entity"] == "Tiger Vanguard"
+    assert chunks[0]["metadata"] == {
+        "author": "playerA",
+        "title": "Tiger Vanguard delayed slam timing",
+        "language": "en",
+    }

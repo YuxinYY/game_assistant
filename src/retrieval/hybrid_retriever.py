@@ -3,12 +3,18 @@ Hybrid retriever: fuses dense (ChromaDB) + sparse (BM25) results via Reciprocal 
 Singleton pattern so the index loads once per process.
 """
 
+import gc
 import logging
 import pickle
 import re
 from pathlib import Path
 from typing import Any, Optional
 from src.core.state import Document
+from src.retrieval.index_builder import (
+    DEFAULT_CHUNKS_PATH,
+    rebuild_chroma_from_chunks,
+    resolve_chroma_dir,
+)
 from src.retrieval.reranker import LLMReranker
 
 _retriever_instance = None
@@ -60,6 +66,12 @@ CHINESE_QUERY_KEYWORDS = (
     "变身",
     "攻略",
 )
+HNSW_ERROR_MARKERS = (
+    "error loading hnsw index",
+    "constructing hnsw segment reader",
+    "creating hnsw segment reader",
+    "backfill request to compactor",
+)
 
 
 def get_retriever(config: dict | None = None) -> "HybridRetriever":
@@ -77,7 +89,10 @@ class HybridRetriever:
     def __init__(self, config: dict):
         self.config = config
         self.cfg = config["retrieval"]
+        self._chroma_dir = resolve_chroma_dir(self.cfg["chroma_persist_dir"])
         self._chroma = None
+        self._dense_available = True
+        self._dense_recovery_attempted = False
         self._bm25 = None
         self._bm25_documents: list[dict[str, Any]] | None = None
         self._bm25_loaded = False
@@ -85,9 +100,11 @@ class HybridRetriever:
 
     @property
     def chroma(self):
+        if not self._dense_available:
+            return None
         if self._chroma is None:
             import chromadb
-            client = chromadb.PersistentClient(path=self.cfg["chroma_persist_dir"])
+            client = chromadb.PersistentClient(path=str(self._chroma_dir))
             self._chroma = client.get_or_create_collection(self.cfg["chroma_collection"])
         return self._chroma
 
@@ -158,12 +175,34 @@ class HybridRetriever:
         return reranked[:top_k]
 
     def _dense_search(self, query: str, top_k: int, filters) -> list[Document]:
-        if self.chroma is None:
+        collection = self.chroma
+        if collection is None:
             return []
         where = _build_chroma_where(filters) if filters else None
-        results = self.chroma.query(
-            query_texts=[query], n_results=top_k, where=where
-        )
+        try:
+            results = collection.query(query_texts=[query], n_results=top_k, where=where)
+        except Exception as exc:
+            if _is_hnsw_load_error(exc) and self._should_recover_dense_error():
+                collection = None
+                if self._recover_chroma_index(exc):
+                    retry_collection = self.chroma
+                    if retry_collection is None:
+                        return []
+                    try:
+                        results = retry_collection.query(
+                            query_texts=[query], n_results=top_k, where=where
+                        )
+                    except Exception as retry_exc:
+                        if _is_hnsw_load_error(retry_exc):
+                            self._disable_dense_search(retry_exc)
+                        raise retry_exc
+                else:
+                    self._disable_dense_search(exc)
+                    raise exc
+            else:
+                if _is_hnsw_load_error(exc):
+                    self._disable_dense_search(exc)
+                raise exc
         return _chroma_results_to_docs(results)
 
     def _sparse_search(self, query: str, top_k: int, filters) -> list[Document]:
@@ -203,6 +242,55 @@ class HybridRetriever:
         # Legacy format only contains the BM25 object, so sparse retrieval is disabled.
         self._bm25 = payload
         self._bm25_documents = []
+
+    def _should_recover_dense_error(self) -> bool:
+        return self._dense_available and not self._dense_recovery_attempted
+
+    def _recover_chroma_index(self, exc: Exception) -> bool:
+        chunks_path = Path(self.cfg.get("chunks_path", DEFAULT_CHUNKS_PATH))
+        if not chunks_path.is_absolute():
+            chunks_path = Path(__file__).resolve().parents[2] / chunks_path
+        if not chunks_path.exists():
+            LOGGER.warning(
+                "Chroma HNSW recovery skipped because chunk source is missing: %s",
+                chunks_path,
+            )
+            return False
+
+        self._dense_recovery_attempted = True
+        self._reset_chroma_connection()
+        LOGGER.warning(
+            "Detected Chroma HNSW load failure. Rebuilding dense index from %s: %s",
+            chunks_path,
+            exc,
+        )
+        try:
+            doc_count = rebuild_chroma_from_chunks(
+                chunks_path=chunks_path,
+                chroma_dir=self._chroma_dir,
+                collection_name=self.cfg["chroma_collection"],
+            )
+        except Exception as rebuild_exc:
+            LOGGER.warning("Chroma index rebuild failed: %s", rebuild_exc)
+            return False
+
+        self._dense_available = True
+        self._reset_chroma_connection()
+        LOGGER.info("Chroma dense index rebuilt successfully with %s docs", doc_count)
+        return True
+
+    def _disable_dense_search(self, reason: Exception) -> None:
+        if self._dense_available:
+            LOGGER.warning(
+                "Disabling dense retrieval for this process after Chroma failure: %s",
+                reason,
+            )
+        self._dense_available = False
+        self._reset_chroma_connection()
+
+    def _reset_chroma_connection(self) -> None:
+        self._chroma = None
+        gc.collect()
 
 
 def _reciprocal_rank_fusion(
@@ -349,3 +437,8 @@ def _restore_chroma_metadata(meta: dict[str, Any]) -> dict[str, Any]:
         else:
             restored[key] = value
     return restored
+
+
+def _is_hnsw_load_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(marker in message for marker in HNSW_ERROR_MARKERS)

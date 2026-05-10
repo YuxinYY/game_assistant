@@ -7,16 +7,16 @@ from app.session import get_profile, update_profile
 
 
 BUILD_LABELS = {
-    None: "未设置",
-    "dodge": "闪身流",
-    "parry": "棍反流",
-    "spell": "法术流",
-    "hybrid": "混合",
+    None: "Not set",
+    "dodge": "Dodge",
+    "parry": "Parry",
+    "spell": "Spell",
+    "hybrid": "Hybrid",
 }
 
 
 def render_profile_panel():
-    st.sidebar.header("玩家状态")
+    st.sidebar.header("Player Profile")
 
     profile = get_profile()
     chapter_options = [None, 1, 2, 3, 4, 5, 6]
@@ -24,42 +24,42 @@ def render_profile_panel():
     staff_level_options = [None, 1, 2, 3, 4, 5]
 
     chapter = st.sidebar.selectbox(
-        "当前章节",
+        "Current chapter",
         options=chapter_options,
         index=chapter_options.index(profile.chapter) if profile.chapter in chapter_options else 0,
-        format_func=lambda x: "未设置" if x is None else f"第 {x} 章",
+        format_func=lambda x: "Not set" if x is None else f"Chapter {x}",
     )
 
     build = st.sidebar.selectbox(
-        "流派",
+        "Build",
         options=build_options,
         index=build_options.index(profile.build) if profile.build in build_options else 0,
         format_func=lambda x: BUILD_LABELS.get(x, x),
     )
 
     staff_level = st.sidebar.selectbox(
-        "棍法等级",
+        "Staff level",
         options=staff_level_options,
         index=staff_level_options.index(profile.staff_level) if profile.staff_level in staff_level_options else 0,
-        format_func=lambda x: "未设置" if x is None else f"Lv.{x}",
+        format_func=lambda x: "Not set" if x is None else f"Lv.{x}",
     )
 
     skills_input = st.sidebar.text_input(
-        "已解锁技能（逗号分隔）",
+        "Unlocked skills (comma-separated)",
         value=", ".join(profile.unlocked_skills),
     )
 
     spells_input = st.sidebar.text_input(
-        "已解锁法术",
+        "Unlocked spells (comma-separated)",
         value=", ".join(profile.unlocked_spells),
     )
 
     transforms_input = st.sidebar.text_input(
-        "已解锁变身",
+        "Unlocked transformations (comma-separated)",
         value=", ".join(profile.unlocked_transformations),
     )
 
-    if st.sidebar.button("更新状态"):
+    if st.sidebar.button("Update profile"):
         update_profile(
             chapter=chapter,
             build=build,
@@ -68,9 +68,9 @@ def render_profile_panel():
             unlocked_spells=[s.strip() for s in spells_input.split(",") if s.strip()],
             unlocked_transformations=[s.strip() for s in transforms_input.split(",") if s.strip()],
         )
-        st.sidebar.success("已更新")
+        st.sidebar.success("Profile updated")
 
-    if st.sidebar.button("清空筛选"):
+    if st.sidebar.button("Clear filters"):
         update_profile(
             chapter=None,
             build=None,
@@ -82,6 +82,6 @@ def render_profile_panel():
             unlocked_spells=[],
             unlocked_transformations=[],
         )
-        st.sidebar.success("已清空")
+        st.sidebar.success("Filters cleared")
 
-    st.sidebar.caption(get_profile().to_context_string())
+    st.sidebar.caption(get_profile().to_context_string(language="en"))

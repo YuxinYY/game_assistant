@@ -3,6 +3,23 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 
+BUILD_LABELS_ZH = {
+    None: "未设置",
+    "dodge": "闪身流",
+    "parry": "棍反流",
+    "spell": "法术流",
+    "hybrid": "混合",
+}
+
+BUILD_LABELS_EN = {
+    None: "Not set",
+    "dodge": "Dodge",
+    "parry": "Parry",
+    "spell": "Spell",
+    "hybrid": "Hybrid",
+}
+
+
 @dataclass
 class Message:
     role: str  # "user" | "assistant"
@@ -51,17 +68,32 @@ class PlayerProfile:
     unlocked_spells: List[str] = field(default_factory=list)
     unlocked_transformations: List[str] = field(default_factory=list)
 
-    def to_context_string(self) -> str:
+    def to_context_string(self, language: str = "zh") -> str:
+        if language == "en":
+            chapter = f"Chapter {self.chapter}" if self.chapter is not None else "Not set"
+            build = BUILD_LABELS_EN.get(self.build, self.build or "Not set")
+            staff_level = f"Lv.{self.staff_level}" if self.staff_level is not None else "Not set"
+            spirit = self.equipped_spirit or "None"
+            return (
+                f"Chapter: {chapter} | Build: {build} | Staff: {staff_level} | "
+                f"Spirit: {spirit} | Armor: {_format_profile_values(self.equipped_armor, language)} | "
+                f"Equipped spells: {_format_profile_values(self.equipped_spells, language)} | "
+                f"Skills: {_format_profile_values(self.unlocked_skills, language)} | "
+                f"Unlocked spells: {_format_profile_values(self.unlocked_spells, language)} | "
+                f"Transformations: {_format_profile_values(self.unlocked_transformations, language)}"
+            )
+
         chapter = f"第{self.chapter}章" if self.chapter is not None else "未设置"
-        build = self.build or "未设置"
+        build = BUILD_LABELS_ZH.get(self.build, self.build or "未设置")
         staff_level = f"Lv.{self.staff_level}" if self.staff_level is not None else "未设置"
         spirit = self.equipped_spirit or "无"
         return (
             f"章节: {chapter} | 流派: {build} | 棍法: {staff_level} | "
-            f"精魄: {spirit} | 披挂: {self.equipped_armor or '无'} | 装备法术: {self.equipped_spells or '无'} | "
-            f"技能: {self.unlocked_skills or '无'} | "
-            f"法术: {self.unlocked_spells or '无'} | "
-            f"变身: {self.unlocked_transformations or '无'}"
+            f"精魄: {spirit} | 披挂: {_format_profile_values(self.equipped_armor, language)} | "
+            f"装备法术: {_format_profile_values(self.equipped_spells, language)} | "
+            f"技能: {_format_profile_values(self.unlocked_skills, language)} | "
+            f"法术: {_format_profile_values(self.unlocked_spells, language)} | "
+            f"变身: {_format_profile_values(self.unlocked_transformations, language)}"
         )
 
     @classmethod
@@ -99,3 +131,9 @@ class AgentState:
         if self.user_screenshots:
             return self.user_screenshots
         return [self.user_screenshot] if self.user_screenshot else []
+
+
+def _format_profile_values(values: List[str], language: str) -> str:
+    if not values:
+        return "None" if language == "en" else "无"
+    return ", ".join(str(value) for value in values)

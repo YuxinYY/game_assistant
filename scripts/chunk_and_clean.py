@@ -138,23 +138,62 @@ def _read_wiki_boss_name(file: Path) -> str:
 
 
 def process_nga_jsonl(file: Path) -> list[dict]:
+    return _process_community_jsonl(file, source="nga", default_language="zh")
+
+
+def process_bilibili_jsonl(file: Path) -> list[dict]:
+    return _process_community_jsonl(file, source="bilibili", default_language="zh")
+
+
+def process_reddit_jsonl(file: Path) -> list[dict]:
+    return _process_community_jsonl(file, source="reddit", default_language="en")
+
+
+def _process_community_jsonl(file: Path, source: str, default_language: str) -> list[dict]:
     results = []
     for line in file.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         post = json.loads(line)
-        for chunk_text_str in chunk_text(post.get("content", "")):
+        text = _build_community_text(post)
+        if not text.strip():
+            continue
+        language = str(post.get("language") or default_language).strip() or default_language
+        entity = _extract_post_entity(post)
+        for chunk_text_str in chunk_text(text):
             results.append({
                 "text": chunk_text_str,
-                "source": "nga",
+                "source": source,
                 "url": post.get("url", ""),
                 "chapter": post.get("chapter"),
-                "entity": post.get("boss_tags", [None])[0],
-                "credibility": CREDIBILITY["nga"],
+                "entity": entity,
+                "credibility": CREDIBILITY[source],
                 "post_date": post.get("timestamp", ""),
-                "metadata": {"author": post.get("author", ""), "title": post.get("title", "")},
+                "metadata": {
+                    "author": post.get("author", ""),
+                    "title": post.get("title", ""),
+                    "language": language,
+                },
             })
     return results
+
+
+def _build_community_text(post: dict) -> str:
+    title = str(post.get("title") or "").strip()
+    content = str(post.get("content") or "").strip()
+    summary = str(post.get("summary") or "").strip()
+    return " ".join(part for part in [title, summary, content] if part)
+
+
+def _extract_post_entity(post: dict) -> str | None:
+    tags = post.get("boss_tags") or post.get("entities") or []
+    if isinstance(tags, list):
+        for tag in tags:
+            cleaned = str(tag or "").strip()
+            if cleaned:
+                return cleaned
+    entity = str(post.get("entity") or "").strip()
+    return entity or None
 
 
 def main():
@@ -166,7 +205,11 @@ def main():
     for f in (RAW_DIR / "nga").glob("*.jsonl"):
         all_chunks.extend(process_nga_jsonl(f))
 
-    # TODO: add bilibili and reddit processors
+    for f in (RAW_DIR / "bilibili").glob("*.jsonl"):
+        all_chunks.extend(process_bilibili_jsonl(f))
+
+    for f in (RAW_DIR / "reddit").glob("*.jsonl"):
+        all_chunks.extend(process_reddit_jsonl(f))
 
     print(f"Total chunks: {len(all_chunks)}")
     with open(OUTPUT, "w", encoding="utf-8") as out:

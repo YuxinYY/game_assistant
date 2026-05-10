@@ -2,8 +2,14 @@
 Targeted tests for retrieval degradation and BM25 document mapping.
 """
 
+import pytest
+
 from src.core.state import Document
-from src.retrieval.hybrid_retriever import HybridRetriever, _build_chroma_where
+from src.retrieval.hybrid_retriever import (
+    HybridRetriever,
+    _build_chroma_where,
+    _is_hnsw_load_error,
+)
 from src.retrieval.query_rewriter import QueryRewriter
 
 
@@ -209,6 +215,69 @@ def test_search_falls_back_to_sparse_results_when_dense_errors(monkeypatch):
 
     assert len(results) == 1
     assert results[0].url == "http://nga/charge"
+
+
+def test_dense_search_rebuilds_and_retries_after_hnsw_load_error(monkeypatch):
+    retriever = HybridRetriever(DUMMY_CONFIG)
+
+    class BrokenCollection:
+        def query(self, query_texts, n_results, where=None):
+            raise RuntimeError("Error constructing hnsw segment reader: Error loading hnsw index")
+
+    class HealthyCollection:
+        def query(self, query_texts, n_results, where=None):
+            return {
+                "documents": [["Tiger Vanguard guide with punish windows."]],
+                "metadatas": [[{
+                    "source": "wiki",
+                    "url": "http://wiki/tiger",
+                    "entity": "Tiger Vanguard",
+                }]],
+            }
+
+    retriever._chroma = BrokenCollection()
+    recovery_calls = []
+
+    def fake_recover(exc):
+        recovery_calls.append(str(exc))
+        retriever._chroma = HealthyCollection()
+        return True
+
+    monkeypatch.setattr(retriever, "_recover_chroma_index", fake_recover)
+
+    results = retriever._dense_search("Tiger Vanguard", top_k=1, filters={"source": "wiki"})
+
+    assert len(results) == 1
+    assert results[0].url == "http://wiki/tiger"
+    assert recovery_calls
+
+
+def test_dense_search_disables_dense_after_failed_hnsw_recovery(monkeypatch):
+    retriever = HybridRetriever(DUMMY_CONFIG)
+    query_calls = {"count": 0}
+
+    class BrokenCollection:
+        def query(self, query_texts, n_results, where=None):
+            query_calls["count"] += 1
+            raise RuntimeError("Error loading hnsw index")
+
+    retriever._chroma = BrokenCollection()
+    monkeypatch.setattr(retriever, "_recover_chroma_index", lambda exc: False)
+
+    with pytest.raises(RuntimeError, match="Error loading hnsw index"):
+        retriever._dense_search("Tiger Vanguard", top_k=1, filters=None)
+
+    assert retriever._dense_available is False
+    assert retriever._dense_search("Tiger Vanguard", top_k=1, filters=None) == []
+    assert query_calls["count"] == 1
+
+
+def test_is_hnsw_load_error_matches_compactor_backfill_message():
+    error = RuntimeError(
+        "Error sending backfill request to compactor: Error constructing hnsw segment reader: Error loading hnsw index"
+    )
+
+    assert _is_hnsw_load_error(error) is True
 
 
 def test_build_chroma_where_wraps_multiple_filters_in_and_clause():

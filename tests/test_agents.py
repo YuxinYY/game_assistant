@@ -338,6 +338,58 @@ class TestCommunityAgent:
         assert any(event.action.startswith("query_rewrite") for event in result.trace)
         assert any(event.action.startswith("nga_search") for event in result.trace)
 
+    def test_execute_skips_community_search_when_no_indexed_source_is_available(self):
+        with patch("src.llm.client.LLMClient.__init__", return_value=None), patch(
+            "src.agents.community_agent.has_indexed_source_documents", return_value=False
+        ), patch("src.agents.community_agent.nga_search", side_effect=AssertionError("should not search nga")), patch(
+            "src.agents.community_agent.bilibili_search", side_effect=AssertionError("should not search bilibili")
+        ), patch("src.agents.community_agent.reddit_search", side_effect=AssertionError("should not search reddit")):
+            agent = CommunityAgent(DUMMY_CONFIG)
+            state = make_state("How do I beat Tiger Vanguard?", chapter=2)
+            state.retrieved_docs = [
+                make_doc(
+                    "Tiger Vanguard's delayed slam can be punished after recovery.",
+                    source="wiki",
+                    chapter=2,
+                    url="http://wiki/en-1",
+                )
+            ]
+
+            result = agent.execute(state)
+
+        assert len(result.retrieved_docs) == 1
+        assert result.retrieved_docs[0].source == "wiki"
+        assert result.trace[0].action == "community_sources_unavailable"
+
+    def test_execute_prioritizes_reddit_for_english_queries(self):
+        reddit_docs = [
+            make_doc(
+                "Dodge late and punish the delayed slam.",
+                source="reddit",
+                chapter=2,
+                url="http://reddit/en-1",
+            )
+        ]
+
+        def availability(source, language=""):
+            return source == "reddit" and language == "en"
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None), patch(
+            "src.agents.community_agent.has_indexed_source_documents", side_effect=availability
+        ), patch("src.agents.community_agent.reddit_search", return_value=reddit_docs), patch(
+            "src.agents.community_agent.nga_search", side_effect=AssertionError("should not search nga first")
+        ), patch(
+            "src.agents.community_agent.bilibili_search", side_effect=AssertionError("should not search bilibili first")
+        ):
+            agent = CommunityAgent(DUMMY_CONFIG)
+            state = make_state("How do I beat Tiger Vanguard?", chapter=2)
+            state.identified_entities = ["Tiger Vanguard"]
+
+            result = agent.execute(state)
+
+        assert any(doc.source == "reddit" for doc in result.retrieved_docs)
+        assert any(event.action.startswith("reddit_search") for event in result.trace)
+
 
 class TestSynthesisAgent:
     def test_execute_uses_llm_output_and_appends_citations(self):
@@ -396,6 +448,43 @@ class TestSynthesisAgent:
         assert "## 直接结论" in result.final_answer
         assert "## 依据" in result.final_answer
         assert "## 针对你的 build 的建议" not in result.final_answer
+
+    def test_execute_english_fact_lookup_uses_english_prompt_and_sections(self):
+        docs = [
+            make_doc(
+                "Tiger Vanguard has multiple high-threat attacks, including Blood Tornado and a delayed slam.",
+                source="wiki",
+                chapter=2,
+                url="http://wiki/en-1",
+            )
+        ]
+        docs[0].entity = "Tiger Vanguard"
+
+        class FakeLLM:
+            def complete(self, messages, system=""):
+                assert "## Direct Answer" in system
+                assert "## 直接结论" not in system
+                assert "Player profile" in messages[0]["content"]
+                return (
+                    "## Direct Answer\n"
+                    "- Tiger Vanguard has multiple named high-threat attacks.\n\n"
+                    "## Evidence\n"
+                    "- The wiki entry explicitly lists Blood Tornado and a delayed slam."
+                )
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None):
+            agent = SynthesisAgent(DUMMY_CONFIG)
+            agent.llm = FakeLLM()
+            state = make_state("How many major attacks does Tiger Vanguard have?")
+            state.workflow = "fact_lookup"
+            state.retrieved_docs = docs
+
+            result = agent.execute(state)
+
+        assert "## Direct Answer" in result.final_answer
+        assert "## Evidence" in result.final_answer
+        assert "## Sources" in result.final_answer
+        assert "[original source](http://wiki/en-1)" in result.final_answer
 
     def test_execute_falls_back_to_extractive_summary_when_llm_fails(self):
         docs = [
@@ -464,6 +553,19 @@ class TestSynthesisAgent:
             result = agent.execute(state)
 
         assert "检索内容中未找到足够资料" in result.final_answer
+        assert result.citations == []
+        assert result.trace[0].action == "synthesis_no_results"
+
+    def test_execute_returns_english_no_results_message_for_english_query(self):
+        with patch("src.llm.client.LLMClient.__init__", return_value=None):
+            agent = SynthesisAgent(DUMMY_CONFIG)
+            state = make_state("Where is Xu Dog?")
+            state.workflow = "navigation"
+
+            result = agent.execute(state)
+
+        assert "## Location Answer" in result.final_answer
+        assert "retrieved material" in result.final_answer
         assert result.citations == []
         assert result.trace[0].action == "synthesis_no_results"
 

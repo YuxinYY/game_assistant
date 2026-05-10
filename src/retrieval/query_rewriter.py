@@ -29,9 +29,10 @@ class QueryRewriter:
             response = self.llm.complete(
                 [{"role": "user", "content": self._build_prompt(query, entities)}],
                 system=(
-                    "你负责为游戏攻略检索改写查询。"
-                    "输出 JSON，格式为 {\"queries\": [\"...\"]}。"
-                    "保持短语化，不要解释。"
+                    "You rewrite Black Myth: Wukong retrieval queries. "
+                    "Return JSON in the format {\"queries\": [\"...\"]}. "
+                    "Keep each query short and retrieval-friendly. "
+                    "Preserve English when the player asks in English, preserve Chinese when the player asks in Chinese."
                 ),
             )
             llm_queries = self._parse_queries(response)
@@ -43,6 +44,7 @@ class QueryRewriter:
 
     def _rule_based_rewrite(self, query: str, entities: list[str]) -> list[str]:
         queries = [query]
+        lower_query = query.lower()
 
         for entity in entities:
             queries.append(f"{entity} {query}")
@@ -51,6 +53,7 @@ class QueryRewriter:
             if self._contains_latin(entity) or self._contains_latin(query):
                 queries.append(f"{entity} boss guide")
                 queries.append(f"how to beat {entity}")
+                queries.append(f"{entity} strategy")
             else:
                 queries.append(f"{entity} 招式 躲避")
                 queries.append(f"{entity} 打法")
@@ -60,12 +63,20 @@ class QueryRewriter:
             queries.append(f"{query} dodge timing")
         if any(keyword in query for keyword in ["怎么打", "打法", "攻略"]):
             queries.append(f"{query} guide")
+        if any(keyword in lower_query for keyword in ["where", "location", "find"]):
+            queries.append(f"{query} location")
+        if any(keyword in lower_query for keyword in ["how many", "what are", "which moves", "which attacks", "move names"]):
+            queries.append(f"{query} move list")
 
         return list(dict.fromkeys(queries))  # deduplicate, preserve order
 
     @staticmethod
     def _contains_latin(text: str) -> bool:
         return bool(re.search(r"[A-Za-z]", text))
+
+    @staticmethod
+    def _contains_cjk(text: str) -> bool:
+        return bool(re.search(r"[\u4e00-\u9fff]", text))
 
     def _parse_queries(self, response: str) -> list[str]:
         payload = self._extract_json(response)
@@ -107,6 +118,16 @@ class QueryRewriter:
                 return None
 
     def _build_prompt(self, query: str, entities: list[str]) -> str:
+        if self._contains_latin(query) and not self._contains_cjk(query):
+            entity_hint = f"\nKnown entities: {entities}" if entities else ""
+            return (
+                f"Player question: {query}{entity_hint}\n\n"
+                "Expand it into 3-5 different search queries for the retrieval system.\n"
+                "Include an everyday phrasing, a wiki-style phrasing, and a short guide-style phrasing when useful.\n"
+                "Prefer English because the user asked in English.\n"
+                "Return only the queries."
+            )
+
         entity_hint = f"\n已知实体: {entities}" if entities else ""
         return (
             f"玩家问题: {query}{entity_hint}\n\n"

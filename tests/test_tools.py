@@ -25,6 +25,18 @@ class TestConsensus:
         assert strategy is not None
         assert strategy["source_count"] == 3  # 3 distinct URLs
 
+    def test_counts_english_strategy_mentions(self):
+        docs = [
+            make_doc("Players recommend a side dodge for the delayed slam.", source="reddit", url="http://reddit/1"),
+            make_doc("Dodge left and punish after recovery.", source="reddit", url="http://reddit/2"),
+        ]
+
+        results = count_source_consensus(docs, topic="Tiger Vanguard")
+
+        strategy = next((s for s in results if s["label"] == "侧向闪避"), None)
+        assert strategy is not None
+        assert strategy["source_count"] == 2
+
     def test_detects_parry_conflict(self):
         docs = [
             make_doc("能棍反这招", url="http://nga/1"),

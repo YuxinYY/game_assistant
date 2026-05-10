@@ -497,3 +497,113 @@
 - Result:
   - The remaining `还是一样` symptom was caused by routing, not by the previous search/synthesis fixes failing to apply.
   - Fact-enumeration questions now bypass the strategy pipeline and keep the cleaned-up wiki summary shape end to end.
+
+### 2026-05-11 Step 16
+
+- Intent: turn the demo into an English-first deliverable so the final web app, question flow, and synthesis layer all work naturally for English reviewers, while keeping the existing Chinese regression path intact.
+- Changes:
+  - Switched the Streamlit page title, chat panel copy, sidebar labels, source-panel labels, screenshot-update messages, and empty-state messages to English.
+  - Added English-aware profile formatting so player state can be rendered cleanly in the UI and in synthesis prompts.
+  - Added English prompt files for general synthesis, fact lookup, and navigation; English questions now receive English no-result messages, English fallback formatting, and English citation labels.
+  - Strengthened routing heuristics for English queries such as `How do I beat ...`, `Which build is better ...`, `Where is ...`, and `How many ...`.
+  - Improved query rewriting instructions so English questions keep English retrieval phrasing instead of drifting back into Chinese-first wording.
+  - Added English regression coverage for routing, synthesis formatting, and an end-to-end English smoke path.
+- Files:
+  - app/streamlit_app.py
+  - app/components/chat_ui.py
+  - app/components/profile_panel.py
+  - app/components/source_panel.py
+  - src/core/state.py
+  - src/core/router.py
+  - src/retrieval/query_rewriter.py
+  - src/agents/synthesis_agent.py
+  - src/utils/language.py
+  - src/llm/prompts/synthesis_agent_en.txt
+  - src/llm/prompts/synthesis_fact_lookup_en.txt
+  - src/llm/prompts/synthesis_navigation_en.txt
+  - tests/test_workflows.py
+  - tests/test_agents.py
+  - tests/test_mvp_smoke.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_workflows.py tests/test_agents.py tests/test_mvp_smoke.py -q
+  - 40 passed in 1.55s
+  - pytest -q
+  - 84 passed in 1.97s
+  - streamlit startup smoke check:
+    - `python -m streamlit run app/streamlit_app.py --server.headless true --server.port 8502`
+    - app booted successfully and exposed `http://localhost:8502`
+- Result:
+  - The demo is now English-first at the UI and final-answer layers instead of only having English retrieval hidden underneath a Chinese product shell.
+  - English questions now have explicit regression coverage for routing, synthesis formatting, and end-to-end orchestration, while the existing Chinese path still passes the full suite.
+
+### 2026-05-11 Step 17
+
+- Intent: make sure the already-ingested English wiki corpus is always usable even when community corpora are sparse, and extend the local community pipeline so English questions can retrieve at least some indexed community evidence instead of relying on wiki-only answers forever.
+- Changes:
+  - Added indexed-source availability checks so CommunityAgent now plans searches by query language instead of always trying `NGA -> Bilibili -> Reddit` in that order.
+  - English queries now prefer indexed English Reddit data first; if no compatible community source is indexed, CommunityAgent exits cleanly and leaves the answer path on wiki-only evidence instead of probing empty sources.
+  - Added explicit trace events for `community_sources_unavailable` and `community_docs_not_found` so the no-community fallback is visible in debugging.
+  - Extended `scripts/chunk_and_clean.py` to process Reddit and Bilibili JSONL files, and added an English Reddit sample corpus under `data/raw/reddit`.
+  - Added English keyword support to consensus/conflict detection so downstream analysis can use English community evidence instead of treating it as opaque text.
+- Files:
+  - src/tools/search.py
+  - src/agents/community_agent.py
+  - scripts/chunk_and_clean.py
+  - src/tools/consensus.py
+  - data/raw/reddit/black_myth_wukong_guides_sample.jsonl
+  - tests/test_agents.py
+  - tests/test_data_pipeline.py
+  - tests/test_tools.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_agents.py tests/test_data_pipeline.py tests/test_tools.py tests/test_mvp_smoke.py -q
+  - 42 passed in 1.53s
+  - python scripts/chunk_and_clean.py
+  - regenerated `data/processed/chunks.jsonl` with 1726 chunks
+  - python scripts/build_indexes.py
+  - rebuilt Chroma and BM25 indexes with 1726 docs
+  - runtime retrieval check:
+    - `wiki_search("How do I beat Tiger Vanguard?")` returned English IGN docs for `Tiger Vanguard`
+    - `reddit_search("How do I beat Tiger Vanguard?")` returned English Reddit docs for `Tiger Vanguard`
+  - pytest -q
+  - 88 passed in 1.95s
+  - streamlit startup smoke check:
+    - `python -m streamlit run app/streamlit_app.py --server.headless true --server.port 8503`
+    - app booted successfully and exposed `http://localhost:8503`
+- Result:
+  - Existing English wiki content is now guaranteed to remain usable even when community corpora are missing, because the community stage exits cleanly instead of probing empty sources and leaving the pipeline in a brittle state.
+  - The local community pipeline now has an indexed English Reddit path, so English boss questions can retrieve both official IGN wiki evidence and English community strategy snippets in the same corpus.
+  - Dense Chroma loading is still noisy at runtime on this machine, but the system now demonstrably falls back to sparse retrieval and continues returning English wiki and Reddit results instead of failing hard.
+
+### 2026-05-11 Step 18
+
+- Intent: stop recurring Chroma HNSW load failures from staying sticky across rebuilds, and make dense retrieval self-heal once before falling back for the rest of the process.
+- Changes:
+  - Extracted shared index-building helpers into `src/retrieval/index_builder.py` so runtime recovery and the one-off rebuild script use the same Chroma rebuild path.
+  - Changed Chroma rebuild behavior to remove and recreate the entire persist directory instead of only deleting the collection, which avoids stale local HNSW segment state surviving across rebuilds on this machine.
+  - Added HNSW-error detection plus one-time auto-rebuild-and-retry logic to `HybridRetriever._dense_search()`.
+  - Added a process-local dense disable path so if recovery still fails, later queries stop retrying the broken dense index and continue through sparse retrieval without repeated HNSW log spam.
+  - Added regression tests covering Chroma directory reset, successful dense self-heal, failed dense recovery disablement, and compactor/backfill HNSW error detection.
+- Files:
+  - src/retrieval/index_builder.py
+  - src/retrieval/hybrid_retriever.py
+  - scripts/build_indexes.py
+  - tests/test_retrieval.py
+  - tests/test_data_pipeline.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_retrieval.py tests/test_data_pipeline.py -q
+  - 26 passed in 2.95s
+  - python scripts/build_indexes.py
+  - rebuilt 1726 Chroma docs successfully after relocating Chroma persistence from the OneDrive-backed project folder to `C:\Users\22629\AppData\Local\game_assistant\chroma_a3eb888a77`
+  - runtime dense retrieval check:
+    - `HybridRetriever._dense_search("How do I beat Tiger Vanguard?", filters={"source": "wiki", "language": "en"})` returned 3 docs
+    - first result URL: `https://www.ign.com/wikis/black-myth-wukong/Tiger_Vanguard`
+    - dense retrieval remained enabled after the query
+  - pytest -q
+  - 93 passed in 3.93s
+- Result:
+  - The recurring Windows HNSW issue was traced to storing Chroma inside the OneDrive-backed workspace, where the persist directory becomes a reparse-point path and is prone to both index-load failures and directory-reset permission errors.
+  - Dense retrieval now uses a local non-OneDrive cache path automatically on Windows, so normal indexing and querying no longer depend on the unstable synced folder.
+  - If a dense HNSW load failure still occurs, the retriever now attempts one controlled rebuild and retry before disabling dense retrieval for the rest of the process and continuing on sparse fallback.

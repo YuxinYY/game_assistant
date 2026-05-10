@@ -4,80 +4,45 @@ Run AFTER chunk_and_clean.py.
 Run: python scripts/build_indexes.py
 """
 
-import json
-import pickle
+import sys
 from pathlib import Path
 
-import chromadb
-from rank_bm25 import BM25Okapi
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-CHUNKS_PATH = Path("data/processed/chunks.jsonl")
-CHROMA_DIR = "data/indexes/chroma_db"
-BM25_PATH = Path("data/indexes/bm25_index.pkl")
-COLLECTION_NAME = "wukong_chunks"
-BATCH_SIZE = 100
-
-
-def load_chunks() -> list[dict]:
-    chunks = []
-    with open(CHUNKS_PATH, encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                chunks.append(json.loads(line))
-    return chunks
-
-
-def build_chroma(chunks: list[dict]):
-    client = chromadb.PersistentClient(path=CHROMA_DIR)
-    try:
-        client.delete_collection(name=COLLECTION_NAME)
-    except Exception:
-        pass
-    collection = client.get_or_create_collection(COLLECTION_NAME)
-
-    for i in range(0, len(chunks), BATCH_SIZE):
-        batch = chunks[i:i + BATCH_SIZE]
-        collection.add(
-            documents=[c["text"] for c in batch],
-            metadatas=[_to_chroma_metadata(c) for c in batch],
-            ids=[f"chunk_{i + j}" for j, _ in enumerate(batch)],
-        )
-        print(f"  chroma: {i + len(batch)}/{len(chunks)}")
-
-    print(f"ChromaDB: {collection.count()} docs in '{COLLECTION_NAME}'")
-
-
-def build_bm25(chunks: list[dict]):
-    BM25_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tokenized = [c["text"].split() for c in chunks]
-    bm25 = BM25Okapi(tokenized)
-    with open(BM25_PATH, "wb") as f:
-        pickle.dump({"bm25": bm25, "documents": chunks}, f)
-    print(f"BM25 index saved to {BM25_PATH}")
-
-
-def _to_chroma_metadata(chunk: dict) -> dict:
-    metadata = {
-        k: v
-        for k, v in chunk.items()
-        if k not in {"text", "metadata"} and v is not None
-    }
-    for key, value in (chunk.get("metadata") or {}).items():
-        if value is not None:
-            metadata[f"meta_{key}"] = value
-    return metadata
+from src.retrieval.index_builder import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_BM25_PATH as BM25_PATH,
+    DEFAULT_CHROMA_DIR as CHROMA_DIR,
+    DEFAULT_CHUNKS_PATH as CHUNKS_PATH,
+    DEFAULT_COLLECTION_NAME as COLLECTION_NAME,
+    _to_chroma_metadata,
+    build_bm25,
+    build_chroma,
+    load_chunks,
+    resolve_chroma_dir,
+)
 
 
 def main():
     print("Loading chunks...")
-    chunks = load_chunks()
+    chunks = load_chunks(CHUNKS_PATH)
     print(f"Loaded {len(chunks)} chunks")
 
     print("Building ChromaDB index...")
-    build_chroma(chunks)
+    print(f"Resolved Chroma path: {resolve_chroma_dir(CHROMA_DIR)}")
+    chroma_count = build_chroma(
+        chunks,
+        chroma_dir=CHROMA_DIR,
+        collection_name=COLLECTION_NAME,
+        batch_size=DEFAULT_BATCH_SIZE,
+        progress_callback=lambda done, total: print(f"  chroma: {done}/{total}"),
+    )
+    print(f"ChromaDB: {chroma_count} docs in '{COLLECTION_NAME}'")
 
     print("Building BM25 index...")
-    build_bm25(chunks)
+    build_bm25(chunks, bm25_path=BM25_PATH)
 
     print("Done.")
 

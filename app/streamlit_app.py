@@ -15,7 +15,7 @@ from app.components.source_panel import render_source_panel
 from src.utils.logging import configure_logging
 
 st.set_page_config(
-    page_title="黑神话攻略助手",
+    page_title="Black Myth: Wukong Guide Assistant",
     page_icon="🐉",
     layout="wide",
 )

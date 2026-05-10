@@ -25,16 +25,32 @@ class TestRouter:
         state = make_state("虎先锋那个招怎么躲？")
         assert self.router.route(state) == "boss_strategy"
 
+    def test_english_boss_query_routes_correctly(self):
+        state = make_state("How do I beat Tiger Vanguard?")
+        assert self.router.route(state) == "boss_strategy"
+
     def test_decision_query_routes_correctly(self):
         state = make_state("闪身流和棍反流哪个好？")
+        assert self.router.route(state) == "decision_making"
+
+    def test_english_decision_query_routes_correctly(self):
+        state = make_state("Which build is better for Yellow Wind Sage?")
         assert self.router.route(state) == "decision_making"
 
     def test_navigation_query_routes_correctly(self):
         state = make_state("广智在哪里？")
         assert self.router.route(state) == "navigation"
 
+    def test_english_navigation_query_routes_correctly(self):
+        state = make_state("Where is Xu Dog?")
+        assert self.router.route(state) == "navigation"
+
     def test_move_count_query_routes_to_fact_lookup(self):
         state = make_state("虎先锋有几个大招？")
+        assert self.router.route(state) == "fact_lookup"
+
+    def test_english_fact_query_routes_to_fact_lookup(self):
+        state = make_state("How many major attacks does Tiger Vanguard have?")
         assert self.router.route(state) == "fact_lookup"
 
     def test_move_listing_query_routes_to_fact_lookup(self):

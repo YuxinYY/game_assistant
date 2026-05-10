@@ -5,8 +5,9 @@ Key feature: query rewriting — turns "那个连砍蓄力的招" into wiki term
 
 from src.agents.base_agent import BaseAgent, Tool
 from src.core.state import AgentState
-from src.tools.search import nga_search, bilibili_search, reddit_search
+from src.tools.search import nga_search, bilibili_search, reddit_search, has_indexed_source_documents
 from src.retrieval.query_rewriter import QueryRewriter
+from src.utils.language import detect_query_language
 
 
 class _NGASearch(Tool):
@@ -57,12 +58,30 @@ class CommunityAgent(BaseAgent):
     def execute(self, state: AgentState) -> AgentState:
         self._rewritten_queries: list[str] = []
         self._searched_sources: list[str] = []
+        self._query_language = detect_query_language(state.user_query)
+        self._source_plan = self._build_source_plan()
         self.max_iterations = max(self.max_iterations, 4)
+        if not self._source_plan:
+            self._trace(
+                state,
+                0,
+                "community_sources_unavailable",
+                f"No indexed community sources available for query language '{self._query_language or 'unknown'}'.",
+            )
+            return state
         initial_context = (
             "目标: 先把用户问题改写成更适合检索的查询，再到社区来源搜实战经验。\n"
-            "优先搜索 NGA；如证据不足，再补 Bilibili 和 Reddit。"
+            f"本次社区来源计划: {', '.join(self._source_plan)}。"
         )
-        return self.react_loop(state, initial_context)
+        state = self.react_loop(state, initial_context)
+        if not any(doc.source in {"nga", "bilibili", "reddit"} for doc in state.retrieved_docs):
+            self._trace(
+                state,
+                len(state.trace),
+                "community_docs_not_found",
+                "No community documents were retrieved; downstream answer will fall back to wiki-only evidence.",
+            )
+        return state
 
     def _apply_tool_result(self, state: AgentState, action_name: str, action_args: dict, tool_result) -> None:
         if action_name == "query_rewrite":
@@ -85,20 +104,38 @@ class CommunityAgent(BaseAgent):
                 {"query": state.user_query, "entities": state.identified_entities},
             )
 
-        if "nga" not in self._searched_sources:
-            return (
-                "优先搜索 NGA 社区经验",
-                "nga_search",
-                {"query": self._pick_query("nga"), "chapter_filter": state.player_profile.chapter},
-            )
-
-        if "bilibili" not in self._searched_sources:
-            return "补搜 Bilibili 玩家经验", "bilibili_search", {"query": self._pick_query("bilibili")}
-
-        if "reddit" not in self._searched_sources:
-            return "补搜 Reddit 英文经验", "reddit_search", {"query": self._pick_query("reddit")}
+        for source in self._source_plan:
+            if source in self._searched_sources:
+                continue
+            if source == "nga":
+                return (
+                    "搜索 NGA 社区经验",
+                    "nga_search",
+                    {"query": self._pick_query("nga"), "chapter_filter": state.player_profile.chapter},
+                )
+            if source == "bilibili":
+                return "搜索 Bilibili 玩家经验", "bilibili_search", {"query": self._pick_query("bilibili")}
+            if source == "reddit":
+                return "搜索 Reddit 英文经验", "reddit_search", {"query": self._pick_query("reddit")}
 
         return "社区检索已完成", "FINISH", {}
+
+    def _build_source_plan(self) -> list[str]:
+        if self._query_language == "en":
+            return [
+                source
+                for source in ["reddit", "nga", "bilibili"]
+                if has_indexed_source_documents(source, language="en")
+            ]
+
+        source_plan: list[str] = []
+        if has_indexed_source_documents("nga"):
+            source_plan.append("nga")
+        if has_indexed_source_documents("bilibili"):
+            source_plan.append("bilibili")
+        if has_indexed_source_documents("reddit", language="en"):
+            source_plan.append("reddit")
+        return source_plan
 
     def _pick_query(self, source: str) -> str:
         if not self._rewritten_queries:

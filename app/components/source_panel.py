@@ -10,20 +10,20 @@ from app.session import get_last_state
 def render_source_panel():
     state = get_last_state()
     if state is None:
-        st.info("先提问，这里会显示系统的推理过程。")
+        st.info("Ask a question to see sources, consensus, and the agent trace.")
         return
 
     if state.profile_updates:
-        st.subheader("画像更新")
+        st.subheader("Profile Updates")
         for update in state.profile_updates:
             st.write(
-                f"**{update['field']}**: {update['old_value']} → {update['new_value']}"
+                f"**{update['field']}**: {update['old_value']} -> {update['new_value']}"
             )
             if update.get("source"):
-                st.caption(f"来源: {update['source']}")
+                st.caption(f"Source: {update['source']}")
 
     # --- Citations ---
-    st.subheader("引用来源")
+    st.subheader("Sources")
     if state.citations:
         for i, cite in enumerate(state.citations, 1):
             title = f"[{i}] {cite.source}"
@@ -31,37 +31,37 @@ def render_source_panel():
                 title += f" | {cite.author}"
             with st.expander(title):
                 if cite.url:
-                    st.markdown(f"[打开原文]({cite.url})")
+                    st.markdown(f"[Open original source]({cite.url})")
                     st.caption(cite.url)
                 else:
-                    st.caption("该条引用没有原始 URL")
+                    st.caption("This citation has no original URL.")
                 st.write(cite.excerpt)
                 if cite.author:
-                    st.caption(f"作者/站点: {cite.author}")
+                    st.caption(f"Author / site: {cite.author}")
     else:
-        st.caption("无引用")
+        st.caption("No citations")
 
     # --- Consensus ---
     if state.consensus_analysis:
-        st.subheader("共识分析")
+        st.subheader("Consensus")
         strategies = state.consensus_analysis.get("strategies", [])
         for s in strategies:
             label = s["label"]
             count = s["source_count"]
-            contested = " ⚠️ 存在争议" if s.get("is_contested") else ""
-            st.write(f"**{label}**: {count} 个来源支持{contested}")
+            contested = " ⚠️ contested" if s.get("is_contested") else ""
+            st.write(f"**{label}**: {count} supporting source(s){contested}")
             breakdown = s.get("sources", {})
             if breakdown:
                 st.caption(" | ".join(f"{src}: {n}" for src, n in breakdown.items()))
 
         conflicts = state.consensus_analysis.get("conflicts", [])
         if conflicts:
-            st.warning("争议点")
+            st.warning("Conflicts")
             for c in conflicts:
-                st.write(f"- **{c['topic']}**: 支持({len(c['pro'])}) vs 反对({len(c['con'])})")
+                st.write(f"- **{c['topic']}**: support({len(c['pro'])}) vs oppose({len(c['con'])})")
 
     # --- Agent Trace ---
-    with st.expander("Agent 推理过程（Debug）"):
+    with st.expander("Agent Trace (Debug)"):
         for event in state.trace:
             st.code(
                 f"[{event.agent}] step {event.step}\n"

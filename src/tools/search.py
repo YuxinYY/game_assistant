@@ -103,12 +103,33 @@ def nga_search(
 
 def bilibili_search(query: str, top_k: int = 5) -> list[Document]:
     from src.retrieval.hybrid_retriever import get_retriever
-    return get_retriever().search(query, top_k=top_k, filters={"source": "bilibili"})
+    filters = {"source": "bilibili"}
+    language = _infer_wiki_language_filter(query)
+    if language:
+        filters["language"] = language
+    return get_retriever().search(query, top_k=top_k, filters=filters)
 
 
 def reddit_search(query: str, top_k: int = 5) -> list[Document]:
     from src.retrieval.hybrid_retriever import get_retriever
-    return get_retriever().search(query, top_k=top_k, filters={"source": "reddit"})
+    filters = {"source": "reddit"}
+    language = _infer_wiki_language_filter(query)
+    if language:
+        filters["language"] = language
+    return get_retriever().search(query, top_k=top_k, filters=filters)
+
+
+def has_indexed_source_documents(source: str, language: str = "") -> bool:
+    from src.retrieval.hybrid_retriever import get_retriever
+
+    for chunk in getattr(get_retriever(), "bm25_documents", []):
+        if chunk.get("source") != source:
+            continue
+        metadata = chunk.get("metadata", {})
+        if language and metadata.get("language") != language:
+            continue
+        return True
+    return False
 
 
 def _infer_wiki_language_filter(query: str) -> str:

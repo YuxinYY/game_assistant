@@ -7,8 +7,8 @@ from app.session import get_orchestrator, get_profile, get_history, add_message,
 
 
 def render_chat_ui():
-    st.title("黑神话悟空攻略助手")
-    st.caption("基于多 agent + 可引用来源的个性化攻略系统")
+    st.title("Black Myth: Wukong Guide Assistant")
+    st.caption("Multi-agent answers with citations and build-aware suggestions")
 
     # Display conversation history
     for msg in get_history():
@@ -17,27 +17,27 @@ def render_chat_ui():
 
     # Screenshot upload
     screenshots = st.file_uploader(
-        "上传游戏截图（可选，自动识别你的 build）",
+        "Upload gameplay screenshots to update your build automatically",
         type=["png", "jpg", "jpeg", "webp"],
         accept_multiple_files=True,
-        label_visibility="collapsed",
     )
 
     screenshot_payloads = [uploaded.getvalue() for uploaded in (screenshots or [])]
 
     parse_only = st.button(
-        "识别截图并更新状态",
+        "Parse screenshots and update profile",
         disabled=not screenshot_payloads,
         use_container_width=True,
     )
     if parse_only:
-        synthetic_query = f"请根据我上传的{len(screenshot_payloads)}张截图更新我的状态"
+        count = len(screenshot_payloads)
+        synthetic_query = f"Update my profile from the {count} uploaded screenshot{'s' if count != 1 else ''}."
         with st.chat_message("user"):
             st.markdown(synthetic_query)
         add_message("user", synthetic_query)
 
         with st.chat_message("assistant"):
-            with st.spinner("正在识别截图并更新玩家状态..."):
+            with st.spinner("Reading screenshots and updating your player profile..."):
                 state = get_orchestrator().run(
                     query="",
                     profile=get_profile(),
@@ -53,7 +53,7 @@ def render_chat_ui():
         return
 
     # Query input
-    query = st.chat_input("输入你的问题，例如：虎先锋那个蓄力的招怎么躲？")
+    query = st.chat_input("Ask in English, for example: How do I beat Tiger Vanguard's charged slam?")
     if not query:
         return
 
@@ -64,7 +64,7 @@ def render_chat_ui():
 
     # Run agent pipeline
     with st.chat_message("assistant"):
-        with st.spinner("正在查询多个来源..."):
+        with st.spinner("Searching the wiki and community sources..."):
             state = get_orchestrator().run(
                 query=query,
                 profile=get_profile(),
@@ -73,7 +73,7 @@ def render_chat_ui():
             )
             set_last_state(state)
 
-        answer = state.final_answer or "（系统未生成回答，请检查配置）"
+        answer = state.final_answer or "The system did not produce an answer. Check the model configuration."
         st.markdown(answer)
 
     add_message("assistant", answer)
@@ -81,27 +81,35 @@ def render_chat_ui():
 
 def _build_profile_update_message(state) -> str:
     if state.profile_updates:
-        lines = ["## 截图识别结果"]
+        lines = ["## Screenshot Parsing"]
         for update in state.profile_updates:
             lines.append(
-                f"- {update['field']}: {update['old_value']} → {update['new_value']}"
+                f"- {update['field']}: {_format_profile_value(update['old_value'])} -> {_format_profile_value(update['new_value'])}"
             )
         lines.append("")
-        lines.append("## 当前玩家状态")
-        lines.append(f"- {state.player_profile.to_context_string()}")
+        lines.append("## Current Player Profile")
+        lines.append(f"- {state.player_profile.to_context_string(language='en')}")
         return "\n".join(lines)
 
     if any(event.action == "vision_unavailable" for event in state.trace):
         return (
-            "## 截图识别结果\n"
-            "- 当前配置下没有可用的视觉模型，所以截图未被解析。\n\n"
-            "## 建议\n"
-            "- 如果主模型使用 Groq，可以单独配置 Anthropic 作为视觉解析 provider。"
+            "## Screenshot Parsing\n"
+            "- No vision model is available in the current configuration, so the screenshots were not parsed.\n\n"
+            "## Suggestion\n"
+            "- If you use Groq for text, configure Anthropic separately as the vision provider."
         )
 
     return (
-        "## 截图识别结果\n"
-        "- 本次未识别出可合并到玩家画像的字段。\n\n"
-        "## 建议\n"
-        "- 尽量上传清晰的 HUD、背包或技能树截图。"
+        "## Screenshot Parsing\n"
+        "- No player-profile fields were extracted from these screenshots.\n\n"
+        "## Suggestion\n"
+        "- Upload clear HUD, inventory, or skill-tree screenshots."
     )
+
+
+def _format_profile_value(value) -> str:
+    if value is None:
+        return "None"
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value) if value else "None"
+    return str(value)
