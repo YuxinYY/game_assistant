@@ -11,6 +11,7 @@ from src.tools.search import wiki_search, entity_lookup, infer_wiki_entity
 class _WikiSearch(Tool):
     name = "wiki_search"
     description = "在 bwiki 数据中搜索 boss 招式、属性、机制"
+    description_en = "Search boss moves, stats, and mechanics in the BWIKI data."
 
     def __call__(self, query: str, entity: str = "") -> list:
         return wiki_search(query, entity_filter=entity)
@@ -19,6 +20,7 @@ class _WikiSearch(Tool):
 class _EntityLookup(Tool):
     name = "entity_lookup"
     description = "精确查找某个实体（boss名、招式名）的 wiki 条目"
+    description_en = "Look up the exact wiki entry for an entity such as a boss or move name."
 
     def __call__(self, entity: str, query: str = "") -> dict:
         return entity_lookup(entity, query=query)
@@ -37,9 +39,10 @@ class WikiAgent(BaseAgent):
         self._query_entity = infer_wiki_entity(state.user_query)
         if self._query_entity:
             state.identified_entities = _merge_entities(state.identified_entities, [self._query_entity])
-        initial_context = (
-            "目标: 识别用户问题里的 boss/招式实体，并补充 wiki 依据。\n"
-            "优先用 wiki_search 找候选文档；只有在已经识别到实体但需要精确条目时才用 entity_lookup。"
+        initial_context = self._localize(
+            state,
+            "目标: 识别用户问题里的 boss/招式实体，并补充 wiki 依据。\n优先用 wiki_search 找候选文档；只有在已经识别到实体但需要精确条目时才用 entity_lookup。",
+            "Goal: identify the boss or move entity mentioned in the user's question and add official wiki evidence. Use wiki_search first for candidate passages; only call entity_lookup when an entity is already known and an exact entry is needed.",
         )
         return self.react_loop(state, initial_context)
 
@@ -48,10 +51,18 @@ class WikiAgent(BaseAgent):
         wiki_docs = [doc for doc in state.retrieved_docs if doc.source == "wiki"]
 
         if not self._did_wiki_search:
-            return "先搜索 wiki 候选文档", "wiki_search", {"query": state.user_query, "entity": primary_entity}
+            return self._localize(
+                state,
+                "先搜索 wiki 候选文档",
+                "Search the wiki candidate passages first.",
+            ), "wiki_search", {"query": state.user_query, "entity": primary_entity}
 
         if not wiki_docs and primary_entity and primary_entity not in self._looked_up_entities:
-            return "候选搜索为空，改用实体精确查找", "entity_lookup", {"entity": primary_entity, "query": state.user_query}
+            return self._localize(
+                state,
+                "候选搜索为空，改用实体精确查找",
+                "The candidate search returned nothing, so switch to an exact entity lookup.",
+            ), "entity_lookup", {"entity": primary_entity, "query": state.user_query}
 
         return super()._decide(context, state)
 
@@ -85,7 +96,11 @@ class WikiAgent(BaseAgent):
     def _fallback_decide(self, context: str, state: AgentState) -> tuple[str, str, dict]:
         if not self._did_wiki_search:
             entity = self._primary_entity(state)
-            return "先搜索 wiki 候选文档", "wiki_search", {"query": state.user_query, "entity": entity}
+            return self._localize(
+                state,
+                "先搜索 wiki 候选文档",
+                "Search the wiki candidate passages first.",
+            ), "wiki_search", {"query": state.user_query, "entity": entity}
 
         if (
             self._primary_entity(state)
@@ -95,9 +110,17 @@ class WikiAgent(BaseAgent):
                 for doc in state.retrieved_docs
             )
         ):
-            return "补一次实体精确查找", "entity_lookup", {"entity": self._primary_entity(state), "query": state.user_query}
+            return self._localize(
+                state,
+                "补一次实体精确查找",
+                "Add one exact entity lookup pass.",
+            ), "entity_lookup", {"entity": self._primary_entity(state), "query": state.user_query}
 
-        return "已有足够 wiki 证据", "FINISH", {}
+        return self._localize(
+            state,
+            "已有足够 wiki 证据",
+            "Enough wiki evidence has already been collected.",
+        ), "FINISH", {}
 
     def _primary_entity(self, state: AgentState) -> str:
         if self._query_entity:

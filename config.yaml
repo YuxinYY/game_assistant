@@ -2,11 +2,16 @@ llm:
   model: claude-sonnet-4-7
   temperature: 0.1
   max_tokens: 2048
+  retry_attempts: 2
+  retry_base_delay_seconds: 1.0
+  synthesis_fallback_provider: anthropic
+  synthesis_fallback_model: claude-sonnet-4-7
 
 retrieval:
   dense_top_k: 20
   sparse_top_k: 20
   rerank_top_k: 5
+  reranker_mode: lexical
   chroma_collection: wukong_chunks
   chroma_persist_dir: data/indexes/chroma_db
   bm25_index_path: data/indexes/bm25_index.pkl

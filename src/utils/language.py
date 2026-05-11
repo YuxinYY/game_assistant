@@ -19,3 +19,7 @@ def detect_query_language(text: str) -> str:
 
 def wants_english(text: str) -> bool:
     return detect_query_language(text) == "en"
+
+
+def preferred_response_language(text: str) -> str:
+    return "en" if wants_english(text) else "zh"

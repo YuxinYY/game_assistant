@@ -6,6 +6,7 @@ returns a fully populated AgentState.
 import yaml
 from pathlib import Path
 from src.core.state import AgentState, PlayerProfile, Message
+from src.core.planner import ExecutionPlanner
 from src.core.router import Router
 from src.core.workflows import build_workflows
 from src.llm.client import LLMClient
@@ -52,6 +53,7 @@ class Orchestrator:
         self.config = config
         self.llm = LLMClient(config)
         self.router = Router(config, llm_client=self.llm)
+        self.planner = ExecutionPlanner(config)
         self.workflows = build_workflows()
         self.tracer = Tracer()
 
@@ -87,10 +89,28 @@ class Orchestrator:
 
         # 2. Execute each agent in the workflow sequentially
         agent_sequence = self.workflows.get(workflow_name, self.workflows["boss_strategy"])
+        plan = self.planner.build_plan(state, workflow_name, agent_sequence)
+        self.tracer.log(f"[orchestrator] plan → {self.planner.describe_plan(plan)}")
+
         for AgentClass in agent_sequence:
+            agent_name = AgentClass.__name__
             if did_preprocess_profile and AgentClass is ProfileAgent:
+                reason = "ProfileAgent was already executed during screenshot preprocessing."
+                self.planner.mark_step_skipped(state, agent_name, reason)
+                self.tracer.log(f"[orchestrator] skip → '{agent_name}': {reason}")
                 continue
+
+            should_run, reason = self.planner.should_execute(state, workflow_name, AgentClass)
+            if not should_run:
+                self.planner.mark_step_skipped(state, agent_name, reason)
+                self.tracer.log(f"[orchestrator] skip → '{agent_name}': {reason}")
+                continue
+
             agent = AgentClass(self.config)
             state = agent.execute(state)
+            self.planner.mark_step_completed(state, agent_name)
+            self.tracer.log(f"[orchestrator] completed → '{agent_name}'")
 
+        if state.stop_reason is None:
+            state.stop_reason = "workflow_completed"
         return state

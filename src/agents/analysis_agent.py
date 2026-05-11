@@ -11,6 +11,7 @@ from src.tools.consensus import count_source_consensus, detect_conflicts
 class _ConsensusCount(Tool):
     name = "consensus_count"
     description = "统计 docs 中各策略建议的出现频次（按来源去重）"
+    description_en = "Count how often each strategy appears across distinct sources."
 
     def __call__(self, docs: list, topic: str) -> dict:
         return count_source_consensus(docs, topic)
@@ -19,6 +20,7 @@ class _ConsensusCount(Tool):
 class _ConflictDetect(Tool):
     name = "conflict_detect"
     description = "检测 docs 中互相矛盾的观点"
+    description_en = "Detect conflicting viewpoints across the retrieved docs."
 
     def __call__(self, docs: list) -> list[dict]:
         return detect_conflicts(docs)
@@ -39,9 +41,10 @@ class AnalysisAgent(BaseAgent):
 
         self._strategies = None
         self._conflicts = None
-        initial_context = (
-            "目标: 统计 retrieved_docs 中的共识策略，并识别冲突观点。\n"
-            "先做共识统计，再补冲突检测。"
+        initial_context = self._localize(
+            state,
+            "目标: 统计 retrieved_docs 中的共识策略，并识别冲突观点。\n先做共识统计，再补冲突检测。",
+            "Goal: count consensus strategies in retrieved_docs and identify conflicting viewpoints. Count consensus first, then run conflict detection.",
         )
         return self.react_loop(state, initial_context)
 
@@ -59,10 +62,22 @@ class AnalysisAgent(BaseAgent):
     def _fallback_decide(self, context: str, state: AgentState) -> tuple[str, str, dict]:
         if self._strategies is None:
             return (
-                "先统计各策略的来源共识",
+                self._localize(
+                    state,
+                    "先统计各策略的来源共识",
+                    "Count cross-source support for each strategy first.",
+                ),
                 "consensus_count",
                 {"docs": state.retrieved_docs, "topic": state.user_query},
             )
         if self._conflicts is None:
-            return "再检测互相矛盾的观点", "conflict_detect", {"docs": state.retrieved_docs}
-        return "共识分析已完成", "FINISH", {}
+            return self._localize(
+                state,
+                "再检测互相矛盾的观点",
+                "Then detect conflicting viewpoints.",
+            ), "conflict_detect", {"docs": state.retrieved_docs}
+        return self._localize(
+            state,
+            "共识分析已完成",
+            "Consensus analysis is complete.",
+        ), "FINISH", {}

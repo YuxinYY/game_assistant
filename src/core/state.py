@@ -57,6 +57,23 @@ class TraceEvent:
 
 
 @dataclass
+class PlanStep:
+    agent: str
+    goal: str = ""
+    status: str = "pending"   # pending | completed | skipped
+    reason: str = ""
+
+
+@dataclass
+class ExecutionPlan:
+    workflow: Optional[str] = None
+    goals: List[str] = field(default_factory=list)
+    evidence_gaps: List[str] = field(default_factory=list)
+    stop_conditions: List[str] = field(default_factory=list)
+    steps: List[PlanStep] = field(default_factory=list)
+
+
+@dataclass
 class PlayerProfile:
     chapter: Optional[int] = None
     build: Optional[str] = None   # "dodge" | "parry" | "spell" | "hybrid"
@@ -118,6 +135,13 @@ class AgentState:
     identified_entities: List[str] = field(default_factory=list)
     retrieved_docs: List[Document] = field(default_factory=list)
     consensus_analysis: Optional[Dict] = None
+    execution_plan: Optional[ExecutionPlan] = None
+    evidence_gaps: List[str] = field(default_factory=list)
+    completed_steps: List[str] = field(default_factory=list)
+    skipped_steps: List[Dict[str, str]] = field(default_factory=list)
+    need_user_clarification: bool = False
+    answer_confidence: float = 0.0
+    stop_reason: Optional[str] = None
 
     # Output
     final_answer: Optional[str] = None

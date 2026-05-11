@@ -123,15 +123,22 @@ class HybridRetriever:
     @property
     def reranker(self) -> LLMReranker:
         if self._reranker is None:
+            reranker_mode = str(self.cfg.get("reranker_mode", "llm")).strip().lower()
+            if reranker_mode not in {"llm", "lexical"}:
+                LOGGER.warning(
+                    "Unknown reranker_mode %r; falling back to lexical reranking.",
+                    reranker_mode,
+                )
+                reranker_mode = "lexical"
             llm_client = None
-            if isinstance(self.config, dict) and "llm" in self.config:
+            if reranker_mode == "llm" and isinstance(self.config, dict) and "llm" in self.config:
                 try:
                     from src.llm.client import LLMClient
 
                     llm_client = LLMClient(self.config)
                 except Exception:
                     llm_client = None
-            self._reranker = LLMReranker(llm_client)
+            self._reranker = LLMReranker(llm_client, mode=reranker_mode)
         return self._reranker
 
     def search(

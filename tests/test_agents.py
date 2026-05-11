@@ -3,12 +3,13 @@ Unit tests for agent behavior.
 Uses dummy config and mocked LLM to test agent logic without real API calls.
 """
 
+import re
 from unittest.mock import patch
-from src.core.state import AgentState, PlayerProfile, Document
+from src.core.state import AgentState, PlayerProfile, Document, ExecutionPlan
 from src.agents.community_agent import CommunityAgent
 from src.agents.profile_agent import ProfileAgent, _filter_by_profile
 from src.agents.analysis_agent import AnalysisAgent
-from src.agents.synthesis_agent import SynthesisAgent
+from src.agents.synthesis_agent import SynthesisAgent, _build_synthesis_context, _extract_citations
 from src.agents.wiki_agent import WikiAgent
 
 
@@ -255,6 +256,36 @@ class TestAnalysisAgent:
             result = agent.execute(state)
             assert result.consensus_analysis == {"strategies": [], "conflicts": []}
 
+    def test_english_query_analysis_trace_observation_stays_in_english(self):
+        docs = [
+            make_doc(
+                "Wait for the delayed slam and punish after recovery.",
+                source="reddit",
+                chapter=2,
+                url="http://reddit/en-1",
+            ),
+            make_doc(
+                "The delayed slam is punishable after the recovery animation.",
+                source="wiki",
+                chapter=2,
+                url="http://wiki/en-1",
+            ),
+        ]
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None), patch(
+            "src.agents.analysis_agent.count_source_consensus",
+            return_value=[{"label": "punish after recovery", "source_count": 2, "sources": {"reddit": 1, "wiki": 1}, "is_contested": False}],
+        ), patch("src.agents.analysis_agent.detect_conflicts", return_value=[]):
+            agent = AnalysisAgent(DUMMY_CONFIG)
+            state = make_state("How do I beat Tiger Vanguard?")
+            state.retrieved_docs = docs
+
+            result = agent.execute(state)
+
+        assert result.trace[-1].action == "FINISH"
+        assert result.trace[-1].observation == "Consensus analysis is complete."
+        assert re.search(r"[\u4e00-\u9fff]", result.trace[-1].observation) is None
+
 
 class TestWikiAgent:
     def test_execute_populates_docs_and_entities(self):
@@ -306,6 +337,29 @@ class TestWikiAgent:
             "entity_lookup({'entity': '虎先锋', 'query': '虎先锋有几个大招'})",
         ]
 
+    def test_english_query_trace_observation_stays_in_english(self):
+        docs = [
+            make_doc(
+                "Tiger Vanguard's delayed slam can be punished after recovery.",
+                source="wiki",
+                url="http://wiki/en-1",
+                chapter=2,
+            )
+        ]
+        docs[0].entity = "Tiger Vanguard"
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None), patch(
+            "src.agents.wiki_agent.infer_wiki_entity", return_value="Tiger Vanguard"
+        ), patch("src.agents.wiki_agent.wiki_search", return_value=docs):
+            agent = WikiAgent(DUMMY_CONFIG)
+            state = make_state("How do I beat Tiger Vanguard?")
+
+            result = agent.execute(state)
+
+        assert result.trace[-1].action == "FINISH"
+        assert result.trace[-1].observation == "Enough wiki evidence has already been collected."
+        assert re.search(r"[\u4e00-\u9fff]", result.trace[-1].observation) is None
+
 
 class TestCommunityAgent:
     def test_execute_uses_unfiltered_fallback_when_chapter_filtered_search_is_empty(self):
@@ -337,6 +391,43 @@ class TestCommunityAgent:
         assert len(result.retrieved_docs) == 1
         assert any(event.action.startswith("query_rewrite") for event in result.trace)
         assert any(event.action.startswith("nga_search") for event in result.trace)
+
+    def test_execute_uses_goal_driven_query_variant_when_initial_rewrite_is_too_broad(self):
+        docs = [
+            make_doc(
+                "虎跃斩第三段建议向左侧闪，时机是前爪落地。",
+                source="nga",
+                chapter=1,
+                url="http://nga/dodge",
+            )
+        ]
+        attempted_queries = []
+
+        def fake_nga_search(query, chapter_filter=None):
+            attempted_queries.append(query)
+            if "躲避" in query or "闪避" in query:
+                return docs
+            return []
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None), patch(
+            "src.agents.community_agent.has_indexed_source_documents", return_value=True
+        ), patch("src.agents.community_agent.nga_search", side_effect=fake_nga_search), patch(
+            "src.agents.community_agent.bilibili_search", return_value=[]
+        ), patch("src.agents.community_agent.reddit_search", return_value=[]), patch(
+            "src.agents.community_agent.QueryRewriter.rewrite", return_value=["虎先锋 怎么打"]
+        ):
+            agent = CommunityAgent(DUMMY_CONFIG)
+            state = make_state("虎先锋那个招怎么躲？", chapter=1)
+            state.identified_entities = ["虎先锋"]
+            state.execution_plan = ExecutionPlan(
+                workflow="boss_strategy",
+                goals=["collect_community_counterplay", "resolve_dodge_timing"],
+            )
+
+            result = agent.execute(state)
+
+        assert len(result.retrieved_docs) == 1
+        assert any("躲避" in query or "闪避" in query for query in attempted_queries)
 
     def test_execute_skips_community_search_when_no_indexed_source_is_available(self):
         with patch("src.llm.client.LLMClient.__init__", return_value=None), patch(
@@ -390,6 +481,28 @@ class TestCommunityAgent:
         assert any(doc.source == "reddit" for doc in result.retrieved_docs)
         assert any(event.action.startswith("reddit_search") for event in result.trace)
 
+    def test_missing_query_arg_is_filled_from_state_for_query_rewrite(self):
+        with patch("src.llm.client.LLMClient.__init__", return_value=None), patch(
+            "src.agents.community_agent.has_indexed_source_documents", return_value=True
+        ), patch(
+            "src.agents.community_agent.QueryRewriter.rewrite",
+            side_effect=lambda query, known_entities=None: [f"rewritten::{query}::{','.join(known_entities or [])}"],
+        ):
+            agent = CommunityAgent(DUMMY_CONFIG)
+            decision_steps = iter([
+                ("rewrite first", "query_rewrite", {"entities": ["Tiger Vanguard"]}),
+                ("done", "FINISH", {}),
+            ])
+            agent._decide = lambda context, state: next(decision_steps)
+            state = make_state("How do I dodge Tiger Vanguard's delayed slam?", chapter=2)
+            state.identified_entities = ["Tiger Vanguard"]
+
+            result = agent.execute(state)
+
+        assert result.trace[0].action == "query_rewrite({'entities': ['Tiger Vanguard'], 'query': " + repr(state.user_query) + "})"
+        assert "error" not in result.trace[0].observation.lower()
+        assert agent._rewritten_queries == [f"rewritten::{state.user_query}::Tiger Vanguard"]
+
 
 class TestSynthesisAgent:
     def test_execute_uses_llm_output_and_appends_citations(self):
@@ -418,7 +531,19 @@ class TestSynthesisAgent:
         assert "## 招式识别" in result.final_answer
         assert "## 参考来源" in result.final_answer
         assert len(result.citations) == 1
-        assert result.trace[0].action == "synthesis_llm"
+
+    def test_no_results_answer_uses_targeted_next_step_hint_when_entity_is_missing(self):
+        with patch("src.llm.client.LLMClient.__init__", return_value=None):
+            agent = SynthesisAgent(DUMMY_CONFIG)
+            state = make_state("这个在哪？")
+            state.workflow = "navigation"
+            state.evidence_gaps = ["missing_entity"]
+
+            result = agent.execute(state)
+
+        assert "地点名" in result.final_answer or "NPC" in result.final_answer or "item" in result.final_answer
+        assert result.answer_confidence == 0.0
+        assert result.trace[0].action == "synthesis_no_results"
 
     def test_execute_fact_lookup_uses_fact_answer_format(self):
         docs = [
@@ -515,6 +640,69 @@ class TestSynthesisAgent:
         assert "http://nga/1" in result.final_answer
         assert result.trace[0].action == "synthesis_fallback"
 
+    def test_execute_uses_secondary_provider_when_primary_generation_fails(self):
+        docs = [
+            make_doc(
+                "Tiger Vanguard's delayed slam leaves a punish window after recovery.",
+                source="wiki",
+                chapter=2,
+                url="http://wiki/en-1",
+            )
+        ]
+
+        class PrimaryFailingLLM:
+            provider = "groq"
+
+            def complete(self, messages, system=""):
+                raise RuntimeError("429 Client Error: Too Many Requests for url: https://api.groq.com/openai/v1/chat/completions")
+
+        class SecondaryLLM:
+            provider = "anthropic"
+
+            def complete(self, messages, system=""):
+                return "## Direct Answer\n- Dodge late and punish after the slam recovery."
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None):
+            agent = SynthesisAgent(DUMMY_CONFIG)
+            agent.llm = PrimaryFailingLLM()
+            agent._fallback_llm = SecondaryLLM()
+            agent._fallback_llm_initialized = True
+            state = make_state("How do I beat Tiger Vanguard?", chapter=2)
+            state.retrieved_docs = docs
+
+            result = agent.execute(state)
+
+        assert result.stop_reason == "answered_via_secondary_provider"
+        assert "## Direct Answer" in result.final_answer
+        assert "## Sources" in result.final_answer
+        assert result.trace[0].action == "synthesis_secondary_llm"
+
+    def test_execute_marks_rate_limit_fallback_stop_reason(self):
+        docs = [
+            make_doc(
+                "Tiger Vanguard's delayed slam leaves a punish window after recovery.",
+                source="wiki",
+                chapter=2,
+                url="http://wiki/en-1",
+            )
+        ]
+
+        class FailingLLM:
+            def complete(self, messages, system=""):
+                raise RuntimeError("429 Client Error: Too Many Requests for url: https://api.groq.com/openai/v1/chat/completions")
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None):
+            agent = SynthesisAgent(DUMMY_CONFIG)
+            agent.llm = FailingLLM()
+            state = make_state("How do I beat Tiger Vanguard?", chapter=2)
+            state.retrieved_docs = docs
+
+            result = agent.execute(state)
+
+        assert result.stop_reason == "generation_rate_limited_fallback"
+        assert "429 Client Error" in result.final_answer
+        assert result.answer_confidence < 0.7
+
     def test_execute_fact_lookup_fallback_uses_fact_sections(self):
         docs = [
             make_doc(
@@ -591,3 +779,78 @@ class TestSynthesisAgent:
             result = agent.execute(state)
 
         assert len(result.retrieved_docs) == 1
+
+    def test_synthesis_context_uses_citation_numbering_for_duplicate_urls(self):
+        docs = [
+            Document(
+                text="Tiger Vanguard delayed slam overview.",
+                source="wiki",
+                url="http://wiki/tiger",
+                chapter=2,
+                entity="Tiger Vanguard",
+                metadata={"author": "ign"},
+            ),
+            Document(
+                text="Tiger Vanguard recovery punish details.",
+                source="wiki",
+                url="http://wiki/tiger",
+                chapter=2,
+                entity="Tiger Vanguard",
+                metadata={"author": "ign"},
+            ),
+            Document(
+                text="Reddit players recommend a late dodge.",
+                source="reddit",
+                url="http://reddit/tiger",
+                chapter=2,
+                entity="Tiger Vanguard",
+                metadata={"author": "reddit"},
+            ),
+        ]
+        state = make_state("How do I dodge Tiger Vanguard's delayed slam?", chapter=2)
+        state.retrieved_docs = docs
+        state.citations = _extract_citations(docs)
+
+        context = _build_synthesis_context(state, language="en")
+
+        assert "[Source 1] wiki | http://wiki/tiger\nTiger Vanguard delayed slam overview." in context
+        assert "[Source 1] wiki | http://wiki/tiger\nTiger Vanguard recovery punish details." in context
+        assert "[Source 2] reddit | http://reddit/tiger\nReddit players recommend a late dodge." in context
+        assert "[Source 3]" not in context
+
+
+class TestAnalysisAgentToolBinding:
+    def test_string_docs_reference_is_resolved_from_state(self):
+        docs = [
+            make_doc(
+                "Wait for the delayed slam and punish after recovery.",
+                source="reddit",
+                chapter=2,
+                url="http://reddit/en-1",
+            )
+        ]
+        captured = {}
+
+        def fake_count_source_consensus(bound_docs, topic):
+            captured["docs"] = bound_docs
+            captured["topic"] = topic
+            return []
+
+        with patch("src.llm.client.LLMClient.__init__", return_value=None), patch(
+            "src.agents.analysis_agent.count_source_consensus",
+            side_effect=fake_count_source_consensus,
+        ):
+            agent = AnalysisAgent(DUMMY_CONFIG)
+            decision_steps = iter([
+                ("count first", "consensus_count", {"docs": "retrieved_docs", "topic": "dodge Tiger Vanguard's delayed slam"}),
+                ("done", "FINISH", {}),
+            ])
+            agent._decide = lambda context, state: next(decision_steps)
+            state = make_state("How do I dodge Tiger Vanguard's delayed slam?", chapter=2)
+            state.retrieved_docs = docs
+
+            result = agent.execute(state)
+
+        assert captured["docs"] == docs
+        assert captured["topic"] == "dodge Tiger Vanguard's delayed slam"
+        assert "error" not in result.trace[0].observation.lower()

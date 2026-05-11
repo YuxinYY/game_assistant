@@ -14,6 +14,12 @@
 - Query rewriting and reranking are now active runtime features instead of placeholders.
 - Remaining work should focus on expanding community sources and stabilizing screenshot/VLM behavior rather than rebuilding the core agent loop again.
 
+## Temporary Load-Shedding Overrides
+
+| Date | Override | Scope | Revert Path | Status |
+| --- | --- | --- | --- | --- |
+| 2026-05-12 | Set `retrieval.reranker_mode=lexical` to stop per-document LLM reranking during query-time retrieval | Runtime load shedding for Groq rate-limit pressure; retrieval quality may degrade slightly on ambiguous queries | Change `retrieval.reranker_mode` back to `llm` in `config.yaml` after stable API credits/rate limits are available | Active |
+
 ## Step Plan
 
 | Step | Goal | Main Files | Validation | Status |
@@ -258,6 +264,31 @@
   - Implemented a provider-agnostic JSON action planner in `BaseAgent._decide()` using normal chat completion instead of provider-specific tool-calling.
   - Extended the shared ReAct loop so tool outputs can be written back into `AgentState` through subclass hooks.
   - Reconnected `WikiAgent`, `CommunityAgent`, and `AnalysisAgent` to the shared ReAct loop with action fallbacks that keep the pipeline usable even when the model output is malformed or unavailable.
+
+  ### 2026-05-12 Temporary Load-Shedding 1
+
+  - Intent: reduce Groq request volume without rewriting the workflow or removing the final-answer fallback behavior.
+  - Changes:
+    - Added a configurable reranker mode so retrieval can explicitly run in `llm` or `lexical` mode.
+    - Updated `HybridRetriever` to avoid constructing an LLM client when lexical reranking is selected.
+    - Switched the project config to `retrieval.reranker_mode=lexical` as a temporary load-shedding measure.
+    - Added tests to lock both lexical-only reranking and the no-LLM-client construction path.
+  - Files:
+    - src/retrieval/reranker.py
+    - src/retrieval/hybrid_retriever.py
+    - config.yaml
+    - tests/test_retrieval.py
+    - modification_log.md
+  - Validation:
+    - pytest tests/test_retrieval.py -q
+    - 18 passed in 2.03s
+    - pytest -q
+    - 105 passed in 4.21s
+    - runtime config check: `retrieval.reranker_mode=lexical`
+  - Result:
+    - Query-time retrieval no longer spends one LLM request per rerank candidate, which substantially reduces Groq pressure during a full workflow run.
+    - The change is intentionally reversible: switching `retrieval.reranker_mode` back to `llm` restores the previous reranking behavior once API credits and rate limits are no longer the bottleneck.
+    - Expected tradeoff: retrieval ordering may be slightly weaker on ambiguous queries because reranking now relies on lexical overlap instead of LLM judgment.
   - Implemented LLM-backed query rewriting with robust parsing plus stronger rule-based fallback rewrites.
   - Implemented reranker scoring with LLM scoring first and lexical fallback second, then integrated reranking into `HybridRetriever.search()`.
   - Updated focused tests and MVP smoke coverage to reflect the restored ReAct path and the new retrieval ranking stage.
@@ -607,3 +638,142 @@
   - The recurring Windows HNSW issue was traced to storing Chroma inside the OneDrive-backed workspace, where the persist directory becomes a reparse-point path and is prone to both index-load failures and directory-reset permission errors.
   - Dense retrieval now uses a local non-OneDrive cache path automatically on Windows, so normal indexing and querying no longer depend on the unstable synced folder.
   - If a dense HNSW load failure still occurs, the retriever now attempts one controlled rebuild and retry before disabling dense retrieval for the rest of the process and continuing on sparse fallback.
+
+### 2026-05-12 Step 19
+
+- Intent: increase agentic behavior without sacrificing the submission-safe reliability of the current web app.
+- Changes:
+  - Added a bounded execution planner in `src/core/planner.py` that attaches explicit goals, evidence gaps, stop conditions, and per-step status tracking to the selected workflow instead of opening the system to unrestricted planning.
+  - Extended `AgentState` with structured planning/runtime fields including `execution_plan`, `evidence_gaps`, `completed_steps`, `skipped_steps`, `answer_confidence`, and `stop_reason`.
+  - Updated the orchestrator to build a runtime plan, trace the plan, and skip low-value agents when their preconditions are not met, such as `ProfileAgent` without new profile evidence or `AnalysisAgent` without multi-source evidence.
+  - Exposed `has_profile_signal_in_text()` from `ProfileAgent` so orchestration can make safe precondition checks without executing the whole profile-update agent.
+  - Upgraded `CommunityAgent` from one-shot source probing to bounded goal-driven retrieval: it now derives search goals from the execution plan, generates targeted query variants, and can retry a source with a more specific query before moving on.
+  - Added answer confidence tracking plus evidence-gap-aware next-step hints in `SynthesisAgent` so low-evidence branches stay grounded and actionable instead of silently collapsing into generic no-results text.
+  - Added regression coverage for planning, conditional skipping, goal-driven community retrieval, and the end-to-end smoke path.
+- Files:
+  - src/core/state.py
+  - src/core/planner.py
+  - src/core/orchestrator.py
+  - src/agents/profile_agent.py
+  - src/agents/community_agent.py
+  - src/agents/synthesis_agent.py
+  - tests/test_agents.py
+  - tests/test_planner.py
+  - tests/test_mvp_smoke.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_agents.py tests/test_planner.py tests/test_mvp_smoke.py -q
+  - 31 passed in 1.75s
+  - pytest -q
+  - 99 passed in 5.11s
+- Result:
+  - The system is still workflow-bounded and submission-safe, but it is no longer just a fixed RAG chain: runtime planning now makes conditional decisions about which agents should execute and what evidence each stage should gather.
+  - `CommunityAgent` now behaves more like a bounded evidence-seeking agent than a single-pass retriever, because it can refine the search objective and retry a source with a more targeted query before giving up.
+  - Failure branches remain robust: when evidence is thin, the final answer now surfaces targeted next-step hints and an explicit confidence signal instead of simply returning a generic empty response.
+
+### 2026-05-12 Step 20
+
+- Intent: make the final generation step more resilient to Groq rate limits and expose enough execution state in the web UI to distinguish “pipeline failed early” from “pipeline completed but synthesis degraded”.
+- Changes:
+  - Added finite retry/backoff handling for Groq text completion in `src/llm/client.py`, retrying `429` and transient `5xx` responses before surfacing an error.
+  - Added configurable `llm.retry_attempts` and `llm.retry_base_delay_seconds` to `config.yaml`.
+  - Updated `SynthesisAgent` to classify fallback stop reasons more precisely, including `generation_rate_limited_fallback` for final-step rate limits.
+  - Extended the Streamlit source/debug panel to show execution goals, evidence gaps, completed/skipped steps, stop reason, and answer confidence, so runtime debugging no longer depends only on the free-text fallback answer.
+  - Added regression coverage for Groq 429 retry behavior and synthesis fallback stop-reason classification.
+- Files:
+  - src/llm/client.py
+  - src/agents/synthesis_agent.py
+  - app/components/source_panel.py
+  - config.yaml
+  - tests/test_llm_client.py
+  - tests/test_agents.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_llm_client.py tests/test_agents.py -q
+  - 30 passed in 1.89s
+  - pytest -q
+  - 101 passed in 3.88s
+- Result:
+  - The web app can now survive short Groq rate-limit spikes more gracefully because the final synthesis call no longer fails fast on the first `429`.
+  - When synthesis still has to fall back, the UI now makes it clear that retrieval/planning completed and only the final generation step degraded, which addresses the earlier ambiguity in the runtime output.
+
+### 2026-05-12 Step 21
+
+- Intent: add a second text-generation provider fallback for the final answer step only, so synthesis can still complete when the primary Groq text call fails.
+- Changes:
+  - Extended `LLMClient` with explicit provider/model overrides and availability checks so a second text-only client can be created safely without changing the rest of the pipeline.
+  - Added synthesis-only fallback configuration in `config.yaml`: the primary text path can remain Groq, while final-answer fallback can explicitly target Anthropic.
+  - Updated `SynthesisAgent` so if the primary provider fails during final answer generation, it attempts one secondary-provider completion before falling back to extractive formatting.
+  - Added a dedicated stop reason `answered_via_secondary_provider` and a new trace action `synthesis_secondary_llm` so the UI/debug panel can show when the answer was rescued by the second provider rather than generated by the primary provider.
+  - Added regression coverage for provider overrides and for the synthesis path where a Groq failure is recovered by a secondary Anthropic-like provider.
+- Files:
+  - src/llm/client.py
+  - src/agents/synthesis_agent.py
+  - config.yaml
+  - tests/test_llm_client.py
+  - tests/test_agents.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_llm_client.py tests/test_agents.py -q
+  - 32 passed in 1.71s
+  - pytest -q
+  - 103 passed in 3.93s
+- Result:
+  - The final answer step is now more robust: when Groq generation fails, the system can still produce a normal LLM-generated answer through the secondary provider instead of dropping straight to extractive fallback.
+  - This fallback is tightly scoped to `SynthesisAgent`, so it improves answer completion reliability without changing provider behavior for routing, query rewriting, or other bounded-agent steps.
+
+### 2026-05-12 Step 22
+
+- Intent: stop English questions from producing mixed-language trace and debug-panel text, without adding a translation step that would increase model calls and failure surface.
+- Changes:
+  - Added query-language-aware localization to `BaseAgent`, so shared ReAct system prompts, state snapshots, tool descriptions, and fallback observations now switch between Chinese and English based on the user's question language.
+  - Localized hard-coded fallback and trace text in `WikiAgent`, `CommunityAgent`, `AnalysisAgent`, and `ProfileAgent` so English queries no longer emit Chinese observations like `已有足够 wiki 证据`.
+  - Added English ReAct prompt files for wiki/community/analysis agents so model-generated reasoning for English queries is less likely to drift back into Chinese.
+  - Localized the Streamlit source/debug panel headings, labels, goal/gap captions, and stop-reason display so the right-side panel follows the same language as the question.
+  - Added regression coverage to verify English trace observations stay free of Chinese fallback text in both unit-agent paths and the English MVP smoke path.
+- Files:
+  - src/utils/language.py
+  - src/agents/base_agent.py
+  - src/agents/wiki_agent.py
+  - src/agents/community_agent.py
+  - src/agents/analysis_agent.py
+  - src/agents/profile_agent.py
+  - app/components/source_panel.py
+  - src/llm/prompts/wiki_agent_en.txt
+  - src/llm/prompts/community_agent_en.txt
+  - src/llm/prompts/analysis_agent_en.txt
+  - tests/test_agents.py
+  - tests/test_mvp_smoke.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_agents.py tests/test_mvp_smoke.py -q
+  - 31 passed in 1.99s
+  - pytest -q
+  - 107 passed in 3.88s
+- Result:
+  - English questions now keep the trace/debug surface in English rather than mixing in Chinese fallback text.
+  - This solution is intentionally lighter than adding runtime translation: it removes the mixed-language UX problem without increasing LLM traffic, cost, or rate-limit pressure.
+
+### 2026-05-12 Step 23
+
+- Intent: fix two recurring runtime failures in the English boss-strategy path at the root cause level rather than patching a single question.
+- Changes:
+  - Added state-aware tool-argument binding in `BaseAgent` so required tool inputs can be resolved from `AgentState` when the model omits them or refers to them symbolically.
+  - The new binding layer now fills common required arguments such as `query`, `topic`, `docs`, `entities`, `profile`, and a single inferred `entity` from the current shared state.
+  - Added coercion for symbolic references like `retrieved_docs` and `state.user_query`, which prevents errors where the model sends a string placeholder instead of the real runtime object.
+  - Updated synthesis source numbering so the `[Source N]` indices shown to the model now follow the same deduplicated citation numbering used in the final citation block.
+  - Tightened citation de-duplication to use `(source, url)` keys and added regression coverage for both tool-arg binding and citation numbering consistency.
+- Files:
+  - src/agents/base_agent.py
+  - src/agents/synthesis_agent.py
+  - tests/test_agents.py
+  - modification_log.md
+- Validation:
+  - pytest tests/test_agents.py -q
+  - 31 passed in 1.44s
+  - pytest -q
+  - 110 passed in 3.89s
+- Result:
+  - `CommunityAgent` no longer fails when the model leaves out the required `query` argument for `query_rewrite`; the runtime now binds it from `state.user_query`.
+  - `AnalysisAgent` no longer breaks when the model passes `retrieved_docs` as a literal string; the runtime now resolves that placeholder to the actual document list.
+  - The final answer no longer risks citing a `Source N` that has no matching link in the appended citation block, because synthesis context numbering and citation numbering now use the same source keying rules.

@@ -19,6 +19,27 @@ from src.tools.parsers import (
 from src.tools.profile_ops import load_knowledge_base, merge_to_profile, validate_extraction
 from src.tools.spoiler_filter import apply_spoiler_filter
 from src.tools.search import infer_wiki_entity
+from src.utils.language import preferred_response_language
+
+PROFILE_SIGNAL_KEYWORDS = (
+    "我现在",
+    "我用",
+    "我带",
+    "我装备",
+    "我没装备",
+    "我在第",
+    "我的章节",
+    "我的棍法",
+    "技能点",
+    "截图里",
+    "识别错",
+    "纠正",
+)
+
+
+def has_profile_signal_in_text(text: str) -> bool:
+    return any(keyword in (text or "") for keyword in PROFILE_SIGNAL_KEYWORDS)
+
 
 # Chapter gates: which chapter unlocks each item
 CHAPTER_GATES: dict[str, int] = {
@@ -105,7 +126,11 @@ class ProfileAgent(BaseAgent):
                     state,
                     0,
                     "vision_unavailable",
-                    "Configured LLM/VLM client does not support screenshot parsing.",
+                    self._localized(
+                        state,
+                        "当前配置的 LLM/VLM 客户端不支持截图解析。",
+                        "Configured LLM/VLM client does not support screenshot parsing.",
+                    ),
                 )
                 return state
             self._trace(state, 0, "vision_context", str(self._vision_context()))
@@ -113,7 +138,16 @@ class ProfileAgent(BaseAgent):
         elif self._has_profile_signal_in_text(state.user_query):
             state = self._handle_conversational_update(state)
         else:
-            self._trace(state, 0, "profile_context", "No new profile signal; keeping current player profile.")
+            self._trace(
+                state,
+                0,
+                "profile_context",
+                self._localized(
+                    state,
+                    "没有检测到新的玩家状态信号，沿用当前玩家档案。",
+                    "No new profile signal; keeping the current player profile.",
+                ),
+            )
 
         state.retrieved_docs = _filter_by_profile(state.retrieved_docs, state.player_profile)
 
@@ -145,7 +179,11 @@ class ProfileAgent(BaseAgent):
                         {
                             "screenshot_type": screenshot_type,
                             "identified_entity": screenshot_entity,
-                            "message": "Unknown or unsupported screenshot type.",
+                            "message": self._localized(
+                                state,
+                                "未知或暂不支持的截图类型。",
+                                "Unknown or unsupported screenshot type.",
+                            ),
                         }
                     ),
                 )
@@ -206,7 +244,16 @@ class ProfileAgent(BaseAgent):
     def _handle_conversational_update(self, state: AgentState) -> AgentState:
         extracted = self._extract_profile_from_text(state.user_query)
         if not extracted:
-            self._trace(state, 0, "profile_text_update", "Detected profile signal but found no structured update.")
+            self._trace(
+                state,
+                0,
+                "profile_text_update",
+                self._localized(
+                    state,
+                    "检测到了玩家状态信号，但没有提取到结构化更新。",
+                    "Detected profile signal but found no structured update.",
+                ),
+            )
             return state
 
         validated = validate_extraction(extracted, self.kb)
@@ -225,21 +272,7 @@ class ProfileAgent(BaseAgent):
         return state
 
     def _has_profile_signal_in_text(self, text: str) -> bool:
-        keywords = [
-            "我现在",
-            "我用",
-            "我带",
-            "我装备",
-            "我没装备",
-            "我在第",
-            "我的章节",
-            "我的棍法",
-            "技能点",
-            "截图里",
-            "识别错",
-            "纠正",
-        ]
-        return any(keyword in text for keyword in keywords)
+        return has_profile_signal_in_text(text)
 
     def _extract_profile_from_text(self, text: str) -> dict[str, Any]:
         extracted: dict[str, Any] = {}
@@ -313,6 +346,9 @@ class ProfileAgent(BaseAgent):
         if not candidate:
             return ""
         return infer_wiki_entity(candidate)
+
+    def _localized(self, state: AgentState, zh_text: str, en_text: str) -> str:
+        return en_text if preferred_response_language(state.user_query) == "en" else zh_text
 
 
 def _filter_by_profile(docs: list[Document], profile) -> list[Document]:

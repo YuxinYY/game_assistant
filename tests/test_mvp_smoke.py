@@ -3,6 +3,7 @@ Minimal smoke test for the text-query MVP pipeline.
 The test avoids live network calls by stubbing retrieval and LLM completion.
 """
 
+import re
 from unittest.mock import patch
 
 from src.agents.profile_agent import ProfileAgent
@@ -71,6 +72,9 @@ def test_text_query_pipeline_returns_answer_and_citations():
     assert state.final_answer
     assert "TODO" not in state.final_answer
     assert "虎跃斩" in state.final_answer
+    assert state.execution_plan is not None
+    assert "WikiAgent" in state.completed_steps
+    assert any(step["agent"] == "ProfileAgent" for step in state.skipped_steps)
 
 
 def test_screenshot_only_flow_updates_profile_without_routing():
@@ -148,3 +152,4 @@ def test_english_text_query_pipeline_returns_english_answer_and_citations():
     assert "## Recommendation For Your Build" in state.final_answer
     assert "## Sources" in state.final_answer
     assert "Tiger Vanguard" in state.final_answer
+    assert all(re.search(r"[\u4e00-\u9fff]", event.observation or "") is None for event in state.trace)

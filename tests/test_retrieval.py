@@ -11,6 +11,7 @@ from src.retrieval.hybrid_retriever import (
     _is_hnsw_load_error,
 )
 from src.retrieval.query_rewriter import QueryRewriter
+from src.retrieval.reranker import LLMReranker
 
 
 class FakeBM25:
@@ -215,6 +216,64 @@ def test_search_falls_back_to_sparse_results_when_dense_errors(monkeypatch):
 
     assert len(results) == 1
     assert results[0].url == "http://nga/charge"
+
+
+def test_reranker_lexical_mode_avoids_llm_calls():
+    class ExplodingLLM:
+        def complete(self, messages, system=""):
+            raise AssertionError("LLM scoring should be disabled in lexical mode")
+
+    relevant_doc = Document(
+        text="Tiger Vanguard charge attack has a long recovery window.",
+        source="wiki",
+        url="http://wiki/relevant",
+        entity="Tiger Vanguard",
+        metadata={"title": "Tiger Vanguard Guide"},
+    )
+    noisy_doc = Document(
+        text="Black Bear Guai arena overview.",
+        source="wiki",
+        url="http://wiki/noisy",
+        entity="Black Bear Guai",
+        metadata={"title": "Black Bear Guai"},
+    )
+
+    reranker = LLMReranker(ExplodingLLM(), mode="lexical")
+
+    results = reranker.rerank(
+        "Tiger Vanguard charge attack",
+        [noisy_doc, relevant_doc],
+        top_k=1,
+    )
+
+    assert len(results) == 1
+    assert results[0].url == "http://wiki/relevant"
+
+
+def test_retriever_uses_lexical_reranker_without_building_llm_client(monkeypatch):
+    import src.llm.client as llm_client_module
+
+    class ExplodingClient:
+        def __init__(self, config):
+            raise AssertionError("HybridRetriever should not build an LLM client in lexical reranker mode")
+
+    monkeypatch.setattr(llm_client_module, "LLMClient", ExplodingClient)
+    config = {
+        "retrieval": {
+            "chroma_persist_dir": "data/indexes/chroma_db",
+            "chroma_collection": "wukong_chunks",
+            "bm25_index_path": "data/indexes/bm25_index.pkl",
+            "reranker_mode": "lexical",
+        },
+        "llm": {
+            "model": "claude-sonnet-4-7",
+            "temperature": 0.3,
+        },
+    }
+
+    retriever = HybridRetriever(config)
+
+    assert retriever.reranker.mode == "lexical"
 
 
 def test_dense_search_rebuilds_and_retries_after_hnsw_load_error(monkeypatch):

@@ -11,8 +11,12 @@ from src.core.state import Document
 
 
 class LLMReranker:
-    def __init__(self, llm_client):
-        self.llm = llm_client
+    def __init__(self, llm_client, mode: str = "llm"):
+        normalized_mode = (mode or "llm").strip().lower()
+        if normalized_mode not in {"llm", "lexical"}:
+            normalized_mode = "lexical"
+        self.mode = normalized_mode
+        self.llm = llm_client if self.mode == "llm" else None
 
     def rerank(self, query: str, docs: list[Document], top_k: int = 5) -> list[Document]:
         """Score each doc for relevance to query, return top_k sorted by score."""
@@ -26,9 +30,10 @@ class LLMReranker:
         """
         Ask LLM: "On a scale 1-10, how relevant is this passage to the query?"
         """
-        llm_score = self._llm_score(query, doc)
-        if llm_score is not None:
-            return llm_score
+        if self.mode == "llm":
+            llm_score = self._llm_score(query, doc)
+            if llm_score is not None:
+                return llm_score
         return self._lexical_score(query, doc)
 
     def _llm_score(self, query: str, doc: Document) -> float | None:

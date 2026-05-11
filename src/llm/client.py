@@ -6,6 +6,7 @@ and token accounting are handled in one place.
 import base64
 import json
 import os
+import time
 from typing import Any
 
 import requests
@@ -22,13 +23,15 @@ except ImportError:  # pragma: no cover - depends on local environment
 
 
 class LLMClient:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, provider_override: str | None = None, model_override: str | None = None):
         if load_dotenv is not None:
             load_dotenv()
-        self.provider = self._resolve_provider(config)
-        self.model = self._resolve_model(config)
+        self.provider = (provider_override or self._resolve_provider(config)).strip().lower()
+        self.model = model_override or self._resolve_model(config, provider=self.provider)
         self.temperature = config["llm"]["temperature"]
         self.max_tokens = config["llm"].get("max_tokens", 2048)
+        self.retry_attempts = max(0, int(config["llm"].get("retry_attempts", 2)))
+        self.retry_base_delay_seconds = max(0.0, float(config["llm"].get("retry_base_delay_seconds", 1.0)))
         self._client = None
         if self.provider not in {"anthropic", "groq"}:
             raise ValueError(f"Unsupported LLM provider: {self.provider}")
@@ -140,6 +143,9 @@ class LLMClient:
     def supports_vision(self) -> bool:
         return self.vision_provider == "anthropic" and self._vision_client is not None
 
+    def is_available(self) -> bool:
+        return self._client is not None
+
     def _resolve_provider(self, config: dict) -> str:
         configured = os.getenv("LLM_PROVIDER") or config["llm"].get("provider")
         if configured:
@@ -150,11 +156,12 @@ class LLMClient:
             return "groq"
         return "anthropic"
 
-    def _resolve_model(self, config: dict) -> str:
+    def _resolve_model(self, config: dict, provider: str | None = None) -> str:
+        provider_name = provider or self.provider
         env_model = os.getenv("LLM_MODEL")
         if env_model:
             return env_model
-        if self.provider == "groq":
+        if provider_name == "groq":
             return os.getenv("GROQ_MODEL") or config["llm"].get("groq_model") or "llama-3.1-8b-instant"
         return config["llm"]["model"]
 
@@ -210,19 +217,58 @@ class LLMClient:
 
     def _groq_complete(self, messages: list[dict], system: str = "") -> str:
         self._require_client()
-        response = self._client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            json={
-                "model": self.model,
-                "temperature": self.temperature,
-                "max_tokens": self.max_tokens,
-                "messages": self._compose_chat_messages(messages, system),
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        return payload["choices"][0]["message"].get("content", "")
+        payload = {
+            "model": self.model,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "messages": self._compose_chat_messages(messages, system),
+        }
+        max_attempts = self.retry_attempts + 1
+        last_error = None
+
+        for attempt in range(max_attempts):
+            try:
+                response = self._client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    json=payload,
+                    timeout=30,
+                )
+                response.raise_for_status()
+                body = response.json()
+                return body["choices"][0]["message"].get("content", "")
+            except requests.HTTPError as exc:
+                last_error = exc
+                response = getattr(exc, "response", None)
+                if not self._should_retry_groq_http_error(response, attempt, max_attempts):
+                    raise
+                time.sleep(self._retry_delay_seconds(attempt, response))
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt >= max_attempts - 1:
+                    raise
+                time.sleep(self._retry_delay_seconds(attempt))
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Groq completion failed without returning a response.")
+
+    def _should_retry_groq_http_error(self, response, attempt: int, max_attempts: int) -> bool:
+        if attempt >= max_attempts - 1:
+            return False
+        status_code = getattr(response, "status_code", None)
+        return status_code == 429 or (status_code is not None and status_code >= 500)
+
+    def _retry_delay_seconds(self, attempt: int, response=None) -> float:
+        retry_after = None
+        headers = getattr(response, "headers", {}) or {}
+        if isinstance(headers, dict):
+            retry_after = headers.get("Retry-After")
+        if retry_after is not None:
+            try:
+                return max(float(retry_after), 0.0)
+            except (TypeError, ValueError):
+                pass
+        return self.retry_base_delay_seconds * (2 ** attempt)
 
     @staticmethod
     def _compose_chat_messages(messages: list[dict], system: str = "") -> list[dict]:
