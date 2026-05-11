@@ -32,8 +32,9 @@ class LLMClient:
         self.max_tokens = config["llm"].get("max_tokens", 2048)
         self.retry_attempts = max(0, int(config["llm"].get("retry_attempts", 2)))
         self.retry_base_delay_seconds = max(0.0, float(config["llm"].get("retry_base_delay_seconds", 1.0)))
+        self.request_timeout_seconds = self._resolve_request_timeout_seconds(config)
         self._client = None
-        if self.provider not in {"anthropic", "groq"}:
+        if self.provider not in {"anthropic", "groq", "openai"}:
             raise ValueError(f"Unsupported LLM provider: {self.provider}")
         self._client = self._build_provider_client(self.provider, self._resolve_api_key(self.provider))
 
@@ -43,8 +44,8 @@ class LLMClient:
 
     def complete(self, messages: list[dict], system: str = "") -> str:
         """Single chat completion. Returns response text."""
-        if self.provider == "groq":
-            return self._groq_complete(messages, system=system)
+        if self.provider in {"groq", "openai"}:
+            return self._openai_compatible_complete(messages, system=system)
         self._require_client()
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -154,6 +155,8 @@ class LLMClient:
             return "anthropic"
         if os.getenv("GROQ_API_KEY"):
             return "groq"
+        if os.getenv("OPENAI_API_KEY"):
+            return "openai"
         return "anthropic"
 
     def _resolve_model(self, config: dict, provider: str | None = None) -> str:
@@ -163,11 +166,15 @@ class LLMClient:
             return env_model
         if provider_name == "groq":
             return os.getenv("GROQ_MODEL") or config["llm"].get("groq_model") or "llama-3.1-8b-instant"
+        if provider_name == "openai":
+            return os.getenv("OPENAI_MODEL") or config["llm"].get("openai_model") or "gpt-4o-mini"
         return config["llm"]["model"]
 
     def _resolve_api_key(self, provider: str) -> str:
         if provider == "groq":
             return os.getenv("GROQ_API_KEY", "")
+        if provider == "openai":
+            return os.getenv("OPENAI_API_KEY", "")
         return os.getenv("ANTHROPIC_API_KEY", "")
 
     def _resolve_vision_provider(self, config: dict) -> str:
@@ -202,7 +209,7 @@ class LLMClient:
             if anthropic is not None and api_key:
                 return anthropic.Anthropic(api_key=api_key)
             return None
-        if provider == "groq":
+        if provider in {"groq", "openai"}:
             if api_key:
                 session = requests.Session()
                 session.headers.update(
@@ -215,23 +222,19 @@ class LLMClient:
             return None
         return None
 
-    def _groq_complete(self, messages: list[dict], system: str = "") -> str:
+    def _openai_compatible_complete(self, messages: list[dict], system: str = "") -> str:
         self._require_client()
-        payload = {
-            "model": self.model,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-            "messages": self._compose_chat_messages(messages, system),
-        }
+        payload = self._build_openai_compatible_payload(messages, system)
         max_attempts = self.retry_attempts + 1
         last_error = None
+        endpoint = self._chat_completion_endpoint()
 
         for attempt in range(max_attempts):
             try:
                 response = self._client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
+                    endpoint,
                     json=payload,
-                    timeout=30,
+                    timeout=self.request_timeout_seconds,
                 )
                 response.raise_for_status()
                 body = response.json()
@@ -239,7 +242,7 @@ class LLMClient:
             except requests.HTTPError as exc:
                 last_error = exc
                 response = getattr(exc, "response", None)
-                if not self._should_retry_groq_http_error(response, attempt, max_attempts):
+                if not self._should_retry_openai_compatible_http_error(response, attempt, max_attempts):
                     raise
                 time.sleep(self._retry_delay_seconds(attempt, response))
             except requests.RequestException as exc:
@@ -250,13 +253,50 @@ class LLMClient:
 
         if last_error is not None:
             raise last_error
-        raise RuntimeError("Groq completion failed without returning a response.")
+        raise RuntimeError(f"{self.provider} completion failed without returning a response.")
 
-    def _should_retry_groq_http_error(self, response, attempt: int, max_attempts: int) -> bool:
+    def _should_retry_openai_compatible_http_error(self, response, attempt: int, max_attempts: int) -> bool:
         if attempt >= max_attempts - 1:
             return False
         status_code = getattr(response, "status_code", None)
         return status_code == 429 or (status_code is not None and status_code >= 500)
+
+    def _build_openai_compatible_payload(self, messages: list[dict], system: str = "") -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": self._compose_chat_messages(messages, system),
+        }
+
+        if self._uses_openai_reasoning_compat_mode():
+            payload["max_completion_tokens"] = self.max_tokens
+            if self.temperature == 1:
+                payload["temperature"] = self.temperature
+            return payload
+
+        payload["temperature"] = self.temperature
+        payload["max_tokens"] = self.max_tokens
+        return payload
+
+    def _uses_openai_reasoning_compat_mode(self) -> bool:
+        return self.provider == "openai" and self.model.startswith("gpt-5")
+
+    def _resolve_request_timeout_seconds(self, config: dict) -> float:
+        configured = config.get("llm", {}).get("request_timeout_seconds")
+        if configured is not None:
+            try:
+                return max(float(configured), 1.0)
+            except (TypeError, ValueError):
+                pass
+        if self.provider == "openai" and self.model.startswith("gpt-5"):
+            return 90.0
+        return 30.0
+
+    def _chat_completion_endpoint(self) -> str:
+        if self.provider == "groq":
+            return "https://api.groq.com/openai/v1/chat/completions"
+        if self.provider == "openai":
+            return "https://api.openai.com/v1/chat/completions"
+        raise RuntimeError(f"Provider '{self.provider}' does not use an OpenAI-compatible chat completions endpoint.")
 
     def _retry_delay_seconds(self, attempt: int, response=None) -> float:
         retry_after = None
@@ -278,7 +318,11 @@ class LLMClient:
 
     def _require_client(self) -> None:
         if self._client is None:
-            env_var = "GROQ_API_KEY" if self.provider == "groq" else "ANTHROPIC_API_KEY"
+            env_var = {
+                "groq": "GROQ_API_KEY",
+                "anthropic": "ANTHROPIC_API_KEY",
+                "openai": "OPENAI_API_KEY",
+            }.get(self.provider, "API_KEY")
             raise RuntimeError(
                 f"LLM client for provider '{self.provider}' is unavailable. "
                 f"Check dependencies and set {env_var}."

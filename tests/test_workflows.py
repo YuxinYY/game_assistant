@@ -57,9 +57,17 @@ class TestRouter:
         state = make_state("虎先锋的大招都叫什么？")
         assert self.router.route(state) == "fact_lookup"
 
+    def test_exact_punish_window_query_routes_to_boss_strategy(self):
+        state = make_state("What exact punish window, in seconds, do I get after Tiger Vanguard's delayed slam?")
+        assert self.router.route(state) == "boss_strategy"
+
     def test_move_dodge_query_stays_boss_strategy(self):
         state = make_state("虎先锋那个蓄力的大招怎么躲？")
         assert self.router.route(state) == "boss_strategy"
+
+    def test_exact_attack_names_query_stays_fact_lookup(self):
+        state = make_state("What are Tiger Vanguard's exact attack names?")
+        assert self.router.route(state) == "fact_lookup"
 
     def test_llm_route_uses_valid_model_output(self):
         class FakeLLM:
@@ -87,6 +95,15 @@ class TestRouter:
         router = Router(DUMMY_CONFIG, llm_client=FakeLLM())
         state = make_state("虎先锋的大招都叫什么？")
         assert router.route(state) == "fact_lookup"
+
+    def test_priority_boss_strategy_rule_overrides_llm_for_exact_punish_window_query(self):
+        class FakeLLM:
+            def complete(self, messages, system=""):
+                return "fact_lookup"
+
+        router = Router(DUMMY_CONFIG, llm_client=FakeLLM())
+        state = make_state("What exact punish window, in seconds, do I get after Tiger Vanguard's delayed slam?")
+        assert router.route(state) == "boss_strategy"
 
     def test_llm_path_falls_back_to_heuristic_during_mvp_stage(self):
         class FakeLLM:

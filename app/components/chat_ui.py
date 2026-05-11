@@ -10,10 +10,7 @@ def render_chat_ui():
     st.title("Black Myth: Wukong Guide Assistant")
     st.caption("Multi-agent answers with citations and build-aware suggestions")
 
-    # Display conversation history
-    for msg in get_history():
-        with st.chat_message(msg.role):
-            st.markdown(msg.content)
+    _render_history()
 
     # Screenshot upload
     screenshots = st.file_uploader(
@@ -30,26 +27,8 @@ def render_chat_ui():
         use_container_width=True,
     )
     if parse_only:
-        count = len(screenshot_payloads)
-        synthetic_query = f"Update my profile from the {count} uploaded screenshot{'s' if count != 1 else ''}."
-        with st.chat_message("user"):
-            st.markdown(synthetic_query)
-        add_message("user", synthetic_query)
-
-        with st.chat_message("assistant"):
-            with st.spinner("Reading screenshots and updating your player profile..."):
-                state = get_orchestrator().run(
-                    query="",
-                    profile=get_profile(),
-                    history=get_history(),
-                    screenshots=screenshot_payloads,
-                )
-                set_last_state(state)
-
-            answer = _build_profile_update_message(state)
-            st.markdown(answer)
-
-        add_message("assistant", answer)
+        _handle_screenshot_parse(screenshot_payloads)
+        st.rerun()
         return
 
     # Query input
@@ -57,25 +36,47 @@ def render_chat_ui():
     if not query:
         return
 
-    # Show user message
-    with st.chat_message("user"):
-        st.markdown(query)
+    _handle_query(query, screenshot_payloads)
+    st.rerun()
+
+
+def _render_history() -> None:
+    for msg in get_history():
+        with st.chat_message(msg.role):
+            st.markdown(msg.content)
+
+
+def _handle_screenshot_parse(screenshot_payloads: list[bytes]) -> None:
+    count = len(screenshot_payloads)
+    synthetic_query = f"Update my profile from the {count} uploaded screenshot{'s' if count != 1 else ''}."
+    add_message("user", synthetic_query)
+
+    with st.spinner("Reading screenshots and updating your player profile..."):
+        state = get_orchestrator().run(
+            query="",
+            profile=get_profile(),
+            history=get_history(),
+            screenshots=screenshot_payloads,
+        )
+        set_last_state(state)
+
+    answer = _build_profile_update_message(state)
+    add_message("assistant", answer)
+
+
+def _handle_query(query: str, screenshot_payloads: list[bytes]) -> None:
     add_message("user", query)
 
-    # Run agent pipeline
-    with st.chat_message("assistant"):
-        with st.spinner("Searching the wiki and community sources..."):
-            state = get_orchestrator().run(
-                query=query,
-                profile=get_profile(),
-                history=get_history(),
-                screenshots=screenshot_payloads,
-            )
-            set_last_state(state)
+    with st.spinner("Searching the wiki and community sources..."):
+        state = get_orchestrator().run(
+            query=query,
+            profile=get_profile(),
+            history=get_history(),
+            screenshots=screenshot_payloads,
+        )
+        set_last_state(state)
 
-        answer = state.final_answer or "The system did not produce an answer. Check the model configuration."
-        st.markdown(answer)
-
+    answer = state.final_answer or "The system did not produce an answer. Check the model configuration."
     add_message("assistant", answer)
 
 

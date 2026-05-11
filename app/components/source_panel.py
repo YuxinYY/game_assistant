@@ -11,7 +11,7 @@ from src.utils.language import preferred_response_language
 def render_source_panel():
     state = get_last_state()
     if state is None:
-        st.info(_ui_text("zh", "提问后即可查看来源、共识和 agent trace。", "Ask a question to see sources, consensus, and the agent trace."))
+        st.info("Ask a question to see sources, consensus, and the agent trace.")
         return
 
     language = preferred_response_language(state.user_query)

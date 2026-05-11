@@ -25,12 +25,25 @@ def _clear_llm_env(monkeypatch):
         "VLM_MODEL",
         "GROQ_MODEL",
         "GROQ_API_KEY",
+        "OPENAI_MODEL",
+        "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
 
 
 class TestLLMClient:
+    def test_selects_openai_provider_from_env(self, monkeypatch):
+        _clear_llm_env(monkeypatch)
+        monkeypatch.setenv("LLM_PROVIDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+        monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+
+        client = LLMClient(DUMMY_CONFIG)
+
+        assert client.provider == "openai"
+        assert client.model == "gpt-4o-mini"
+
     def test_selects_groq_provider_from_env(self, monkeypatch):
         _clear_llm_env(monkeypatch)
         monkeypatch.setenv("LLM_PROVIDER", "groq")
@@ -65,6 +78,111 @@ class TestLLMClient:
         assert client.provider == "anthropic"
         assert client.model == "claude-sonnet-4-7"
         assert client.is_available() is True
+
+    def test_openai_complete_uses_openai_chat_completions_payload(self, monkeypatch):
+        _clear_llm_env(monkeypatch)
+        monkeypatch.setenv("LLM_PROVIDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+
+        client = LLMClient(DUMMY_CONFIG)
+        captured = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "choices": [
+                        {"message": {"content": "boss_strategy"}}
+                    ]
+                }
+
+        class FakeSession:
+            def post(self, url, json, timeout):
+                captured["url"] = url
+                captured["json"] = json
+                captured["timeout"] = timeout
+                return FakeResponse()
+
+        client._client = FakeSession()
+        result = client.complete(
+            [{"role": "user", "content": "How do I beat Tiger Vanguard?"}],
+            system="You are a classifier.",
+        )
+
+        assert result == "boss_strategy"
+        assert captured["url"] == "https://api.openai.com/v1/chat/completions"
+        assert captured["json"]["model"] == "gpt-4o-mini"
+        assert captured["json"]["messages"][0] == {
+            "role": "system",
+            "content": "You are a classifier.",
+        }
+        assert captured["json"]["messages"][1] == {
+            "role": "user",
+            "content": "How do I beat Tiger Vanguard?",
+        }
+        assert captured["json"]["temperature"] == 0.3
+        assert captured["json"]["max_tokens"] == 64
+
+    def test_gpt5_payload_uses_max_completion_tokens_and_omits_non_default_temperature(self, monkeypatch):
+        _clear_llm_env(monkeypatch)
+        monkeypatch.setenv("LLM_PROVIDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.setenv("OPENAI_MODEL", "gpt-5")
+
+        client = LLMClient(DUMMY_CONFIG)
+        captured = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "choices": [
+                        {"message": {"content": "boss_strategy"}}
+                    ]
+                }
+
+        class FakeSession:
+            def post(self, url, json, timeout):
+                captured["url"] = url
+                captured["json"] = json
+                captured["timeout"] = timeout
+                return FakeResponse()
+
+        client._client = FakeSession()
+        result = client.complete(
+            [{"role": "user", "content": "How do I beat Tiger Vanguard?"}],
+            system="You are a classifier.",
+        )
+
+        assert result == "boss_strategy"
+        assert captured["url"] == "https://api.openai.com/v1/chat/completions"
+        assert captured["json"]["model"] == "gpt-5"
+        assert captured["json"]["max_completion_tokens"] == 64
+        assert "max_tokens" not in captured["json"]
+        assert "temperature" not in captured["json"]
+        assert captured["timeout"] == 90.0
+
+    def test_request_timeout_uses_explicit_config_value(self, monkeypatch):
+        _clear_llm_env(monkeypatch)
+        monkeypatch.setenv("LLM_PROVIDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.setenv("OPENAI_MODEL", "gpt-5")
+
+        client = LLMClient({
+            "llm": {
+                "model": "claude-sonnet-4-7",
+                "temperature": 0.3,
+                "max_tokens": 64,
+                "request_timeout_seconds": 12,
+            }
+        })
+
+        assert client.request_timeout_seconds == 12.0
 
     def test_groq_complete_uses_openai_compatible_payload(self, monkeypatch):
         _clear_llm_env(monkeypatch)

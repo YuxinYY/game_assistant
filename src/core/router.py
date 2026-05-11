@@ -45,6 +45,10 @@ class Router:
                 "You are a Black Myth: Wukong question intent classifier / 你是一个游戏问题意图分类器。"
                 "Return exactly one of these four labels / 你只能返回以下四个类别之一："
                 "boss_strategy, decision_making, navigation, fact_lookup。"
+                "Questions about dodge timing, punish windows, parry reliability, counter timing, or how to respond to a boss move stay in boss_strategy even if they ask for exact timing or seconds. / "
+                "涉及闪避时机、反打窗口、弹反可靠性、招式应对的问题，即使问精确秒数，也归到 boss_strategy。"
+                "Use fact_lookup only for pure naming, counting, property, or value lookup that does not ask how to respond in combat. / "
+                "只有纯名称、计数、属性、数值查询，且不涉及战斗应对时，才归到 fact_lookup。"
                 "Do not explain. Do not add extra text. / 不要解释，不要补充文字。"
             ),
         )
@@ -53,6 +57,9 @@ class Router:
     def _heuristic_route(self, query: str) -> str:
         """Keyword fallback used during development."""
         normalized_query = query.lower()
+        if self._is_combat_timing_or_counterplay_query(query):
+            return "boss_strategy"
+
         boss_keywords = ["怎么打", "破解", "闪避", "招式", "boss", "先锋", "大圣"]
         boss_keywords_en = [
             "how do i beat",
@@ -65,6 +72,10 @@ class Router:
             "avoid",
             "attack pattern",
             "move set",
+            "parry",
+            "timing",
+            "window",
+            "reliable",
         ]
         decision_keywords = ["选择", "装备", "技能点", "流派", "哪个好"]
         decision_keywords_en = [
@@ -97,9 +108,86 @@ class Router:
         return "fact_lookup"
 
     def _priority_rule_route(self, query: str) -> str | None:
+        if self._is_combat_timing_or_counterplay_query(query):
+            return "boss_strategy"
         if self._is_fact_listing_or_count_query(query):
             return "fact_lookup"
         return None
+
+    def _is_combat_timing_or_counterplay_query(self, query: str) -> bool:
+        normalized_query = query.lower()
+        combat_response_keywords = (
+            "怎么躲",
+            "如何躲",
+            "怎么打",
+            "如何打",
+            "打法",
+            "闪避",
+            "反打",
+            "弹反",
+            "格挡",
+            "招架",
+            "时机",
+            "窗口",
+            "后摇",
+            "稳定",
+            "可靠",
+            "应对",
+        )
+        combat_response_keywords_en = (
+            "dodge",
+            "punish",
+            "counter",
+            "parry",
+            "avoid",
+            "timing",
+            "window",
+            "reliable",
+            "safest",
+            "deal with",
+            "respond to",
+        )
+        combat_subject_keywords = (
+            "招式",
+            "攻击",
+            "连段",
+            "斩",
+            "砍",
+            "砸",
+            "扫",
+            "拳",
+            "踢",
+            "抓",
+            "boss",
+        )
+        combat_subject_keywords_en = (
+            "move",
+            "moves",
+            "attack",
+            "attacks",
+            "slash",
+            "slam",
+            "combo",
+            "punch",
+            "kick",
+            "grab",
+            "pattern",
+            "boss",
+        )
+        exact_timing_keywords_en = ("exact", "seconds", "frames")
+        exact_timing_keywords = ("精确", "秒", "帧")
+
+        has_response_shape = any(keyword in query for keyword in combat_response_keywords) or any(
+            keyword in normalized_query for keyword in combat_response_keywords_en
+        )
+        has_combat_subject = any(keyword in query for keyword in combat_subject_keywords) or any(
+            keyword in normalized_query for keyword in combat_subject_keywords_en
+        )
+        has_exact_timing_shape = any(keyword in query for keyword in exact_timing_keywords) or any(
+            keyword in normalized_query for keyword in exact_timing_keywords_en
+        )
+
+        return has_response_shape and (has_combat_subject or has_exact_timing_shape)
 
     def _is_fact_listing_or_count_query(self, query: str) -> bool:
         normalized_query = query.lower()

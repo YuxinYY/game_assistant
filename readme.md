@@ -107,7 +107,7 @@ Each agent runs a **ReAct loop** (Think → Tool → Observe → repeat, max 3 i
 
 ```bash
 cp .env.example .env
-# fill in ANTHROPIC_API_KEY
+# fill in one text provider key: ANTHROPIC_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY
 
 pip install -r requirements.txt
 ```
