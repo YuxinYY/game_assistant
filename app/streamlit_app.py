@@ -3,6 +3,7 @@ Streamlit entry point.
 Run: streamlit run app/streamlit_app.py
 """
 
+import base64
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -15,11 +16,22 @@ from app.components.profile_panel import render_profile_panel
 from app.components.source_panel import render_source_panel
 from src.utils.logging import configure_logging
 
+
+@st.cache_data(show_spinner=False)
+def _background_video_data_url() -> str:
+    video_path = Path(__file__).parent / "static" / "beat_vid1.mp4"
+    if not video_path.exists():
+        return ""
+    encoded = base64.b64encode(video_path.read_bytes()).decode("ascii")
+    return f"data:video/mp4;base64,{encoded}"
+
 st.set_page_config(
     page_title="Black Myth: Wukong Guide Assistant",
     page_icon="🐉",
     layout="wide",
 )
+
+background_video_url = _background_video_data_url()
 
 st.markdown("""
 <style>
@@ -97,10 +109,10 @@ section[data-testid="stSidebar"] > div,
 </style>
 <div id="bg-video-container">
     <video id="bg-video" autoplay muted loop playsinline>
-        <source src="/app/static/beat_vid1.mp4" type="video/mp4">
+        <source src="__BACKGROUND_VIDEO_URL__" type="video/mp4">
     </video>
 </div>
-""", unsafe_allow_html=True)
+""".replace("__BACKGROUND_VIDEO_URL__", background_video_url), unsafe_allow_html=True)
 
 # Mute button via iframe — persists across Streamlit rerenders
 components.html("""
