@@ -1,128 +1,63 @@
-# Black Myth: Wukong — Multi-Agent Gameplay Assistant
+# Black Myth: Wukong Multi-Agent Gameplay Assistant
 
-A **multi-agent** system that answers boss-strategy questions with verifiable, source-attributed,
-player-state-aware advice. Built for the Text as Data final project.
+A Streamlit-based multi-agent assistant that answers Black Myth: Wukong questions with source-grounded, player-state-aware advice.
 
-<!-- ## Why Not Just Use an LLM?
+## Quick Start
 
-| Dimension | Vanilla LLM | This System |
-|-----------|-------------|-------------|
-| Move name accuracy | ❌ Often fabricated | ✅ Grounded in wiki |
-| Specific values | ❌ Made up | ✅ From player reports |
-| Personalization | ❌ Generic advice | ✅ Filtered by your build |
-| Verifiability | ❌ No sources | ✅ Citations + links |
-| Uncertainty | ❌ Always confident | ✅ Flags consensus/dispute | -->
+### Option 1: Use the hosted app
 
-## Architecture
+This is the recommended path for instructors and reviewers.
 
-```
-Query + PlayerProfile
-        │
-        ▼
-   Orchestrator
-   ├── Router (intent → workflow)
-   └── Workflow execution
-        │
-        ├── WikiAgent       → identifies move names from bwiki
-        ├── CommunityAgent  → retrieves NGA/Bilibili/Reddit tactics
-        ├── AnalysisAgent   → consensus count + conflict detection
-        ├── ProfileAgent    → filters by player state + spoiler guard
-        └── SynthesisAgent  → writes cited, honest final answer
-              │
-              ▼
-        AgentState (shared whiteboard across all agents)
+- Open the public Streamlit Community Cloud deployment URL: https://gameassistant-yuxin.streamlit.app/.
+- No local Python environment, dependency installation, or data pipeline setup is required.
+- The hosted app can run directly from the checked-in data and retrieval indexes in this repository.
+
+### Option 2: Run locally
+
+Use this path if you want to develop or debug the project locally.
+
+Prerequisites:
+
+- Python 3.11
+- At least one text-model API key: OpenAI, Anthropic, or Groq
+- Anthropic is still recommended if you want screenshot parsing and stronger synthesis fallback behavior
+
+1. Create a Python 3.11 environment.
+
+```bash
+python -m venv .venv
 ```
 
-Each agent runs a **ReAct loop** (Think → Tool → Observe → repeat, max 3 iterations).
+If you prefer conda, any Python 3.11 environment works as well.
 
-## Project Structure
+2. Activate the environment.
 
-```
-.
-├── config.yaml                # all magic numbers — no constants in code
-├── .env.example               # API key template
-│
-├── data/
-│   ├── raw/{wiki,nga,bilibili,reddit}/
-│   ├── processed/chunks.jsonl
-│   └── indexes/{chroma_db/,bm25_index.pkl}
-│
-├── scripts/                   # run once, not part of runtime
-│   ├── crawl_bwiki.py
-│   ├── crawl_nga.py
-│   ├── chunk_and_clean.py
-│   ├── build_indexes.py
-│   └── build_eval_set.py
-│
-├── src/
-│   ├── core/
-│   │   ├── state.py           # AgentState — shared whiteboard
-│   │   ├── orchestrator.py    # main controller
-│   │   ├── router.py          # intent → workflow name
-│   │   └── workflows.py       # workflow definitions as data, not if-else
-│   ├── agents/
-│   │   ├── base_agent.py      # ReAct loop, one implementation
-│   │   ├── wiki_agent.py
-│   │   ├── community_agent.py
-│   │   ├── profile_agent.py
-│   │   ├── analysis_agent.py
-│   │   └── synthesis_agent.py
-│   ├── tools/                 # pure functions, stateless
-│   │   ├── search.py
-│   │   ├── consensus.py
-│   │   ├── spoiler_filter.py
-│   │   └── screenshot_parser.py
-│   ├── retrieval/
-│   │   ├── hybrid_retriever.py  # BM25 + ChromaDB, RRF fusion
-│   │   ├── reranker.py
-│   │   └── query_rewriter.py   # vague desc → wiki terms
-│   ├── llm/
-│   │   ├── client.py
-│   │   └── prompts/            # all prompts as .txt files, not code strings
-│   └── utils/
-│       ├── tracing.py
-│       ├── cache.py
-│       └── logging.py
-│
-├── eval/
-│   ├── eval_set.jsonl          # 5 seed QA pairs (expand to 30+)
-│   ├── run_eval.py
-│   └── metrics.py              # citation_rate, spoiler_rate, keyword_coverage, workflow_accuracy
-│
-├── app/
-│   ├── streamlit_app.py        # 3-column layout
-│   ├── session.py
-│   └── components/
-│       ├── chat_ui.py
-│       ├── profile_panel.py    # sidebar: chapter, build, unlocked items
-│       └── source_panel.py     # citations + consensus + agent trace (demo killer)
-│
-└── tests/
-    ├── test_agents.py
-    ├── test_tools.py
-    └── test_workflows.py
+```powershell
+.venv\Scripts\Activate.ps1
 ```
 
-## Setup
+```bash
+source .venv/bin/activate
+```
+
+3. Copy `.env.example` to `.env`, then fill in your provider keys.
+
+```powershell
+Copy-Item .env.example .env
+```
 
 ```bash
 cp .env.example .env
-# fill in one text provider key: ANTHROPIC_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY
-
-pip install -r requirements.txt
 ```
 
-## Data Pipeline (run once)
+4. Install dependencies from the repository root.
 
 ```bash
-python scripts/crawl_bwiki.py
-python scripts/crawl_nga.py
-python scripts/chunk_and_clean.py
-python scripts/build_indexes.py
-python scripts/build_eval_set.py
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-## Run the App
+5. Start the app from the repository root.
 
 ```bash
 streamlit run app/streamlit_app.py
@@ -130,15 +65,15 @@ streamlit run app/streamlit_app.py
 
 ## Deploy on Streamlit Community Cloud
 
-This repository is small enough to deploy directly on Streamlit Community Cloud, including the checked-in retrieval data.
+This repository is small enough to deploy directly on Streamlit Community Cloud because the processed data and retrieval indexes are already committed.
 
 1. Push the repository to GitHub.
-2. In Streamlit Community Cloud, create a new app from that GitHub repository.
+2. In Streamlit Community Cloud, create a new app from that repository.
 3. Set the main file path to `app/streamlit_app.py`.
-4. Keep the Python version on 3.11. This repo includes `runtime.txt` for that.
-5. Add your secrets in the app settings before the first run.
+4. Keep Python on 3.11. This repo includes `runtime.txt` for that.
+5. Add your secrets before the first run.
 
-The app now supports Streamlit secrets in either of these shapes:
+The app supports Streamlit secrets in either of these shapes:
 
 ```toml
 LLM_PROVIDER = "openai"
@@ -147,6 +82,8 @@ OPENAI_MODEL = "gpt-4o-mini"
 ANTHROPIC_API_KEY = "optional_but_recommended_for_vision_and_fallback"
 GROQ_API_KEY = ""
 GROQ_MODEL = "llama-3.1-8b-instant"
+VLM_PROVIDER = "anthropic"
+VLM_MODEL = "claude-sonnet-4-7"
 ```
 
 or:
@@ -171,27 +108,84 @@ You can copy from `.streamlit/secrets.toml.example` when filling the Streamlit C
 
 Notes:
 
-- Do not upload your local `.env` file to GitHub.
-- Rotate any API keys that have already been exposed outside your machine.
-- Screenshot parsing still benefits from an Anthropic key, even if text generation uses OpenAI.
+- Do not commit `.env` or `.streamlit/secrets.toml`.
+- One text provider key is enough for normal text QA.
+- Screenshot parsing still benefits from an Anthropic key even if text generation uses OpenAI or Groq.
 
-## Run Evaluation
+## What The App Does
+
+- Answers boss-strategy, navigation, fact-lookup, and build-comparison questions.
+- Grounds answers in local wiki and community evidence instead of relying on unsupported generation.
+- Uses player context such as chapter, build, unlocked abilities, and screenshots to personalize advice.
+- Shows citations, consensus notes, and execution traces in the UI.
+
+## Architecture
+
+```text
+Query + PlayerProfile
+      |
+      v
+   Orchestrator
+   |- Router (intent -> workflow)
+   `- Workflow execution
+      |
+      |- ProfileAgent   -> update player state and spoiler constraints
+      |- WikiAgent      -> identify entities and gather wiki evidence
+      |- CommunityAgent -> retrieve community tactics
+      |- AnalysisAgent  -> summarize agreement and conflict
+      `- SynthesisAgent -> write the final cited answer
+          |
+          v
+      AgentState (shared whiteboard across all agents)
+```
+
+The system is intentionally bounded: agents operate within fixed workflows, shared state, and a small toolset instead of unconstrained autonomous planning.
+
+## Repository Layout
+
+```text
+.
+|- app/          Streamlit UI, session state, and UI components
+|- data/         Checked-in raw data, processed chunks, and retrieval indexes
+|- eval/         Evaluation runner, metrics, and manual test sets
+|- scripts/      One-time crawling and index-building utilities
+|- src/          Core orchestration, agents, tools, retrieval, and prompts
+`- tests/        Automated regression tests
+```
+
+## Developer Commands
+
+Run the automated tests:
+
+```bash
+pytest -q
+```
+
+Run the evaluation script:
 
 ```bash
 python eval/run_eval.py
 ```
 
-## Run Tests
+## Optional: Rebuild Data And Indexes
+
+You do not need this section to use the hosted app or to run the checked-in demo locally. It is only for maintainers who want to refresh the corpus.
 
 ```bash
-pytest tests/
+python scripts/crawl_bwiki.py
+python scripts/crawl_ign_wiki.py
+python scripts/chunk_and_clean.py
+python scripts/build_indexes.py
+python scripts/build_eval_set.py
 ```
 
-## Key Design Decisions
+`scripts/crawl_nga.py` is still partial and should not be treated as a required setup step.
 
-- **State-driven, not param-passing**: all agents read/write `AgentState`; no spaghetti param chains
-- **Workflows as data**: `workflows.py` maps name → `[AgentClass, ...]`; adding a workflow = one list entry
-- **Prompts as files**: all `.txt` in `src/llm/prompts/`; tweak prompt without touching code
-- **Tools are pure functions**: stateless, independently testable, reusable across agents
-- **Player-state filter at retrieval**: chapter-gated content never reaches the LLM
-- **Honest uncertainty**: `SynthesisAgent` prompt forbids unsupported claims; conflicts flagged with ⚠️
+## Design Choices
+
+- State-driven instead of passing long parameter chains between agents.
+- Workflows are defined as data, which keeps routing and execution easier to test.
+- Prompts are stored as files, so prompt iteration does not require editing Python logic.
+- Tools stay mostly pure and stateless, which makes regression testing easier.
+- Spoiler filtering and build filtering happen before final synthesis whenever profile context is available.
+- The final answer is required to stay honest about missing evidence and source conflicts.
