@@ -33,6 +33,56 @@ def _clear_llm_env(monkeypatch):
 
 
 class TestLLMClient:
+    def test_reads_root_level_streamlit_secrets_when_env_is_missing(self, monkeypatch):
+        _clear_llm_env(monkeypatch)
+        monkeypatch.setattr(
+            llm_client_module,
+            "st",
+            type(
+                "FakeStreamlit",
+                (),
+                {
+                    "secrets": {
+                        "LLM_PROVIDER": "openai",
+                        "OPENAI_API_KEY": "openai-secret",
+                        "OPENAI_MODEL": "gpt-4o-mini",
+                    }
+                },
+            )(),
+            raising=False,
+        )
+
+        client = LLMClient(DUMMY_CONFIG)
+
+        assert client.provider == "openai"
+        assert client.model == "gpt-4o-mini"
+
+    def test_reads_nested_streamlit_secrets_when_env_is_missing(self, monkeypatch):
+        _clear_llm_env(monkeypatch)
+        monkeypatch.setattr(
+            llm_client_module,
+            "st",
+            type(
+                "FakeStreamlit",
+                (),
+                {
+                    "secrets": {
+                        "llm": {"provider": "openai"},
+                        "openai": {
+                            "api_key": "openai-secret",
+                            "model": "gpt-4o-mini",
+                        },
+                    }
+                },
+            )(),
+            raising=False,
+        )
+
+        client = LLMClient(DUMMY_CONFIG)
+
+        assert client.provider == "openai"
+        assert client.model == "gpt-4o-mini"
+
     def test_selects_openai_provider_from_env(self, monkeypatch):
         _clear_llm_env(monkeypatch)
         monkeypatch.setenv("LLM_PROVIDER", "openai")

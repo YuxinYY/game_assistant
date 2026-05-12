@@ -128,6 +128,53 @@ python scripts/build_eval_set.py
 streamlit run app/streamlit_app.py
 ```
 
+## Deploy on Streamlit Community Cloud
+
+This repository is small enough to deploy directly on Streamlit Community Cloud, including the checked-in retrieval data.
+
+1. Push the repository to GitHub.
+2. In Streamlit Community Cloud, create a new app from that GitHub repository.
+3. Set the main file path to `app/streamlit_app.py`.
+4. Keep the Python version on 3.11. This repo includes `runtime.txt` for that.
+5. Add your secrets in the app settings before the first run.
+
+The app now supports Streamlit secrets in either of these shapes:
+
+```toml
+LLM_PROVIDER = "openai"
+OPENAI_API_KEY = "replace_me"
+OPENAI_MODEL = "gpt-4o-mini"
+ANTHROPIC_API_KEY = "optional_but_recommended_for_vision_and_fallback"
+GROQ_API_KEY = ""
+GROQ_MODEL = "llama-3.1-8b-instant"
+```
+
+or:
+
+```toml
+[llm]
+provider = "openai"
+
+[openai]
+api_key = "replace_me"
+model = "gpt-4o-mini"
+
+[anthropic]
+api_key = "optional_but_recommended_for_vision_and_fallback"
+
+[groq]
+api_key = ""
+model = "llama-3.1-8b-instant"
+```
+
+You can copy from `.streamlit/secrets.toml.example` when filling the Streamlit Cloud secrets editor.
+
+Notes:
+
+- Do not upload your local `.env` file to GitHub.
+- Rotate any API keys that have already been exposed outside your machine.
+- Screenshot parsing still benefits from an Anthropic key, even if text generation uses OpenAI.
+
 ## Run Evaluation
 
 ```bash
