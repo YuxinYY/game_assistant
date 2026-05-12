@@ -34,7 +34,10 @@ _EXCERPT_SENTENCE_BREAK_PATTERN = re.compile(r"[。！？.!?]")
 _ENGLISH_NAMED_OPTIONS = {
     "Immobilize": ("spell", "定身术"),
     "Rock Solid": ("spell", "铜头铁臂"),
+    "Ring of Fire": ("spell", "安身法"),
     "Cloud Step": ("spell", "聚形散气"),
+    "Pluck of Many": ("spell", "身外身法"),
+    "Spell Binder": ("spell", "禁字法"),
     "Red Tides": ("transformation", "Red Tides"),
     "Azure Dust": ("transformation", "Azure Dust"),
     "Ashen Slumber": ("transformation", "Ashen Slumber"),

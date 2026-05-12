@@ -19,6 +19,20 @@ BUILD_LABELS_EN = {
     "hybrid": "Hybrid",
 }
 
+STANCE_LABELS_ZH = {
+    None: "未设置",
+    "smash": "劈棍",
+    "pillar": "立棍",
+    "thrust": "戳棍",
+}
+
+STANCE_LABELS_EN = {
+    None: "Not set",
+    "smash": "Smash",
+    "pillar": "Pillar",
+    "thrust": "Thrust",
+}
+
 
 @dataclass
 class Message:
@@ -76,10 +90,16 @@ class ExecutionPlan:
 @dataclass
 class PlayerProfile:
     chapter: Optional[int] = None
+    current_boss: Optional[str] = None
     build: Optional[str] = None   # "dodge" | "parry" | "spell" | "hybrid"
+    primary_stance: Optional[str] = None  # "smash" | "pillar" | "thrust"
     staff_level: Optional[int] = None
     equipped_spirit: Optional[str] = None
     equipped_armor: List[str] = field(default_factory=list)
+    equipped_mysticism: Optional[str] = None
+    equipped_body: Optional[str] = None
+    equipped_strand: Optional[str] = None
+    equipped_transformation: Optional[str] = None
     equipped_spells: List[str] = field(default_factory=list)
     unlocked_skills: List[str] = field(default_factory=list)
     unlocked_spells: List[str] = field(default_factory=list)
@@ -90,26 +110,36 @@ class PlayerProfile:
 
     def to_context_string(self, language: str = "zh") -> str:
         if language == "en":
+            current_boss = self.current_boss or "Not set"
             chapter = f"Chapter {self.chapter}" if self.chapter is not None else "Not set"
             build = BUILD_LABELS_EN.get(self.build, self.build or "Not set")
+            stance = STANCE_LABELS_EN.get(self.primary_stance, self.primary_stance or "Not set")
             staff_level = f"Lv.{self.staff_level}" if self.staff_level is not None else "Not set"
             spirit = self.equipped_spirit or "None"
             return (
-                f"Chapter: {chapter} | Build: {build} | Staff: {staff_level} | "
-                f"Spirit: {spirit} | Armor: {_format_profile_values(self.equipped_armor, language)} | "
+                f"Current boss: {current_boss} | Chapter: {chapter} | Build: {build} | "
+                f"Stance: {stance} | Staff: {staff_level} | Spirit: {spirit} | "
+                f"Spell slots: {_format_spell_slots(self, language)} | "
+                f"Transformation slot: {_format_scalar_value(self.equipped_transformation, language)} | "
+                f"Armor: {_format_profile_values(self.equipped_armor, language)} | "
                 f"Equipped spells: {_format_profile_values(self.equipped_spells, language)} | "
                 f"Skills: {_format_profile_values(self.unlocked_skills, language)} | "
                 f"Unlocked spells: {_format_profile_values(self.unlocked_spells, language)} | "
                 f"Transformations: {_format_profile_values(self.unlocked_transformations, language)}"
             )
 
+        current_boss = self.current_boss or "未设置"
         chapter = f"第{self.chapter}章" if self.chapter is not None else "未设置"
         build = BUILD_LABELS_ZH.get(self.build, self.build or "未设置")
+        stance = STANCE_LABELS_ZH.get(self.primary_stance, self.primary_stance or "未设置")
         staff_level = f"Lv.{self.staff_level}" if self.staff_level is not None else "未设置"
         spirit = self.equipped_spirit or "无"
         return (
-            f"章节: {chapter} | 流派: {build} | 棍法: {staff_level} | "
-            f"精魄: {spirit} | 披挂: {_format_profile_values(self.equipped_armor, language)} | "
+            f"当前 boss: {current_boss} | 章节: {chapter} | 流派: {build} | "
+            f"棍势: {stance} | 棍法: {staff_level} | 精魄: {spirit} | "
+            f"法术槽: {_format_spell_slots(self, language)} | "
+            f"当前变化: {_format_scalar_value(self.equipped_transformation, language)} | "
+            f"披挂: {_format_profile_values(self.equipped_armor, language)} | "
             f"装备法术: {_format_profile_values(self.equipped_spells, language)} | "
             f"技能: {_format_profile_values(self.unlocked_skills, language)} | "
             f"法术: {_format_profile_values(self.unlocked_spells, language)} | "
@@ -164,3 +194,27 @@ def _format_profile_values(values: List[str], language: str) -> str:
     if not values:
         return "None" if language == "en" else "无"
     return ", ".join(str(value) for value in values)
+
+
+def _format_scalar_value(value: Optional[str], language: str) -> str:
+    if not value:
+        return "None" if language == "en" else "无"
+    return str(value)
+
+
+def _format_spell_slots(profile: PlayerProfile, language: str) -> str:
+    if language == "en":
+        labels = (
+            ("Mysticism", profile.equipped_mysticism),
+            ("Body", profile.equipped_body),
+            ("Strand", profile.equipped_strand),
+        )
+    else:
+        labels = (
+            ("奇术", profile.equipped_mysticism),
+            ("身法", profile.equipped_body),
+            ("毫毛", profile.equipped_strand),
+        )
+    return ", ".join(
+        f"{label}={_format_scalar_value(value, language)}" for label, value in labels
+    )

@@ -63,10 +63,16 @@ def _has_any_profile_filter(profile: PlayerProfile) -> bool:
     return any(
         [
             profile.chapter is not None,
+            bool(profile.current_boss),
             profile.build is not None,
+            profile.primary_stance is not None,
             profile.staff_level is not None,
             bool(profile.equipped_spirit),
             bool(profile.equipped_armor),
+            bool(profile.equipped_mysticism),
+            bool(profile.equipped_body),
+            bool(profile.equipped_strand),
+            bool(profile.equipped_transformation),
             bool(profile.equipped_spells),
             bool(profile.unlocked_skills),
             bool(profile.unlocked_spells),
@@ -81,10 +87,16 @@ def _has_any_profile_filter(profile: PlayerProfile) -> bool:
 def _looks_like_legacy_default_profile(profile: PlayerProfile) -> bool:
     return (
         profile.chapter == 1
+        and not profile.current_boss
         and profile.build == "dodge"
+        and profile.primary_stance is None
         and profile.staff_level == 1
         and not profile.equipped_spirit
         and not profile.equipped_armor
+        and not profile.equipped_mysticism
+        and not profile.equipped_body
+        and not profile.equipped_strand
+        and not profile.equipped_transformation
         and not profile.equipped_spells
         and not profile.unlocked_skills
         and not profile.unlocked_spells
@@ -94,10 +106,16 @@ def _looks_like_legacy_default_profile(profile: PlayerProfile) -> bool:
 
 def _clear_profile_filters(profile: PlayerProfile) -> None:
     profile.chapter = None
+    profile.current_boss = None
     profile.build = None
+    profile.primary_stance = None
     profile.staff_level = None
     profile.equipped_spirit = None
     profile.equipped_armor = []
+    profile.equipped_mysticism = None
+    profile.equipped_body = None
+    profile.equipped_strand = None
+    profile.equipped_transformation = None
     profile.equipped_spells = []
     profile.unlocked_skills = []
     profile.unlocked_spells = []

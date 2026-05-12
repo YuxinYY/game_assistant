@@ -18,13 +18,28 @@ VALUE_ALIASES = {
         "rock solid": "铜头铁臂",
         "ring of fire": "安身法",
         "cloud step": "聚形散气",
+        "pluck of many": "身外身法",
+        "spell binder": "禁字法",
     },
     "all_skills_tree": {
         "immobilize": "定身术",
         "rock solid": "铜头铁臂",
         "ring of fire": "安身法",
         "cloud step": "聚形散气",
+        "pluck of many": "身外身法",
+        "spell binder": "禁字法",
     },
+}
+
+TRANSFORMATION_ALIASES = {
+    "赤潮": "Red Tides",
+    "碧尘": "Azure Dust",
+    "灰蛰": "Ashen Slumber",
+    "皓霜": "Hoarfrost",
+    "乌川": "Umbral Abyss",
+    "金岚": "Golden Lining",
+    "藕雹": "Violet Hail",
+    "黯雷": "Dark Thunder",
 }
 
 KB_FILES = {
@@ -50,10 +65,16 @@ UNION_FIELDS = {
 
 PROFILE_FIELDS = {
     "chapter",
+    "current_boss",
     "build",
+    "primary_stance",
     "staff_level",
     "equipped_spirit",
     "equipped_armor",
+    "equipped_mysticism",
+    "equipped_body",
+    "equipped_strand",
+    "equipped_transformation",
     "equipped_spells",
     "unlocked_skills",
     "unlocked_spells",
@@ -96,11 +117,16 @@ def validate_extraction(raw_extraction: dict[str, Any], kb: dict[str, list[str]]
     if build is not None and build not in {"dodge", "parry", "spell", "hybrid"}:
         validated.pop("build", None)
 
+    primary_stance = validated.get("primary_stance")
+    if primary_stance is not None and primary_stance not in {"smash", "pillar", "thrust"}:
+        validated.pop("primary_stance", None)
+
     _validate_list(validated, "unlocked_spells", set(kb.get("all_spells", [])), VALUE_ALIASES.get("all_spells", {}))
     _validate_list(validated, "equipped_spells", set(kb.get("all_spells", [])), VALUE_ALIASES.get("all_spells", {}))
     _validate_scalar(validated, "equipped_spirit", set(kb.get("all_spirits", [])))
     _validate_list(validated, "equipped_armor", set(kb.get("all_armors", [])))
     _validate_list(validated, "unlocked_skills", set(kb.get("all_skills_tree", [])), VALUE_ALIASES.get("all_skills_tree", {}))
+    _validate_list(validated, "unlocked_transformations", set(), TRANSFORMATION_ALIASES)
 
     return validated
 

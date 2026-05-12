@@ -118,3 +118,18 @@ class TestProfileOps:
 
         assert validated["unlocked_spells"] == ["定身术"]
         assert validated["unlocked_skills"] == ["铜头铁臂", "聚形散气"]
+
+    def test_validate_normalizes_transformation_aliases(self):
+        validated = validate_extraction(
+            {
+                "unlocked_transformations": ["赤潮", "Azure Dust"],
+            },
+            {
+                "all_spells": [],
+                "all_spirits": [],
+                "all_armors": [],
+                "all_skills_tree": [],
+            },
+        )
+
+        assert validated["unlocked_transformations"] == ["Red Tides", "Azure Dust"]

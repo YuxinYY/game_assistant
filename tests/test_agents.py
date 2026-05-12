@@ -152,6 +152,26 @@ class TestProfileAgent:
         assert result.player_profile.chapter == 2
         assert any(event.action == "parse_combat_hud" for event in result.trace)
 
+    def test_profile_current_boss_can_seed_entity_without_uploads(self):
+        with patch("src.llm.client.LLMClient.__init__", return_value=None):
+            agent = ProfileAgent(
+                DUMMY_CONFIG,
+                knowledge_base={
+                    "all_spells": [],
+                    "all_spirits": [],
+                    "all_armors": [],
+                    "all_skills_tree": [],
+                },
+            )
+            state = AgentState(
+                user_query="How do I deal with the delayed slam?",
+                player_profile=PlayerProfile(current_boss="Tiger Vanguard", chapter=2),
+            )
+
+            result = agent.execute(state)
+
+        assert result.identified_entities == ["Tiger Vanguard"]
+
     def test_other_screenshot_can_seed_boss_entity_via_generic_visual_detector(self):
         class FakeVisionClient:
             vision_provider = "anthropic"

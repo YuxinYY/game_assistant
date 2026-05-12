@@ -206,6 +206,12 @@ class ProfileAgent(BaseAgent):
                 ),
             )
 
+        if not state.identified_entities and getattr(state.player_profile, "current_boss", None):
+            profile_entity = infer_wiki_entity(state.player_profile.current_boss)
+            if profile_entity:
+                state.identified_entities = _merge_entities(state.identified_entities, [profile_entity])
+                self._trace(state, 0, "profile_current_boss", profile_entity)
+
         state.retrieved_docs = _filter_by_profile(state.retrieved_docs, state.player_profile)
 
         if self.config.get("spoiler", {}).get("enable", True) and state.player_profile.chapter is not None:
