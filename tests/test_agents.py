@@ -505,6 +505,27 @@ class TestCommunityAgent:
 
 
 class TestSynthesisAgent:
+    def test_extract_citations_builds_sentence_aware_excerpt(self):
+        docs = [
+            Document(
+                text=(
+                    "Location: As a required boss, you won't be able to proceed to the Chapter 2 End Boss without defeating him and obtaining one half of the Key Items needed to open various doors in Chapter 2's Yellow Wind Ridge. "
+                    "You can find this Vanguard in the Fright Cliff Region by taking a right after heading through the Sandgate Village."
+                ),
+                source="wiki",
+                url="http://wiki/stone-vanguard",
+                chapter=2,
+                entity="Stone Vanguard",
+                metadata={"author": "ign"},
+            )
+        ]
+
+        citations = _extract_citations(docs)
+
+        assert citations[0].excerpt.startswith("Location:")
+        assert not citations[0].excerpt.startswith(("d obtaining", "nd obtaining", "obtaining one"))
+        assert citations[0].excerpt.endswith(("…", "."))
+
     def test_execute_uses_llm_output_and_appends_citations(self):
         docs = [
             make_doc(

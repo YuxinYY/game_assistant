@@ -47,6 +47,22 @@ def test_chunk_text_prefers_english_sentence_breaks_when_available():
     assert chunks[0].endswith(".")
 
 
+def test_chunk_text_avoids_mid_word_or_mid_sentence_overlap_starts():
+    text = (
+        "Boss: Stone Vanguard. Type: Yaoguai King. Chapter: 2. "
+        "Summary: The Stone Vanguard is a required Yaoguai King boss fight that you can encounter in Chapter 2 of Black Myth Wukong. "
+        "Located near the end of the Fright Cliff area, imposing Rock Guai sports a formidable defense and exploding attacks. "
+        "Location: As a required boss, you won't be able to proceed to the Chapter 2 End Boss without defeating him and obtaining one half of the Key Items needed to open various doors in Chapter 2's Yellow Wind Ridge. "
+        "You can find this Vanguard in the Fright Cliff Region by taking a right after heading through the Sandgate Village."
+    )
+
+    chunks = chunk_text(text, max_chars=180, overlap=70)
+
+    assert len(chunks) >= 2
+    assert chunks[1].startswith(("Summary:", "Located near", "Location:"))
+    assert not chunks[1].startswith(("d obtaining", "nd obtaining", "obtaining one"))
+
+
 def test_to_chroma_metadata_flattens_nested_metadata():
     metadata = _to_chroma_metadata(
         {

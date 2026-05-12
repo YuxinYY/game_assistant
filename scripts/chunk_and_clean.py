@@ -41,11 +41,66 @@ def chunk_text(text: str, max_chars: int = MAX_CHUNK_CHARS, overlap: int = OVERL
             candidate_end = start + break_positions[-1]
             if candidate_end > start + max_chars // 2:
                 end = candidate_end
-        chunks.append(text[start:end])
+        chunks.append(text[start:end].strip())
         if end >= len(text):
             break
-        start = max(end - overlap, start + 1)
+        start = _align_next_chunk_start(
+            text,
+            current_start=start,
+            current_end=end,
+            desired_start=max(end - overlap, start + 1),
+        )
     return chunks
+
+
+def _align_next_chunk_start(text: str, current_start: int, current_end: int, desired_start: int) -> int:
+    desired_start = max(min(desired_start, current_end), current_start + 1)
+
+    next_sentence_start = _find_next_sentence_start(text, desired_start, current_end)
+    if next_sentence_start is not None:
+        return next_sentence_start
+
+    previous_sentence_start = _find_previous_sentence_start(text, current_start, desired_start, current_end)
+    if previous_sentence_start is not None:
+        return previous_sentence_start
+
+    next_word_start = _find_next_word_start(text, desired_start, current_end)
+    if next_word_start is not None:
+        return next_word_start
+
+    return desired_start
+
+
+def _find_next_sentence_start(text: str, desired_start: int, current_end: int) -> int | None:
+    for match in SENTENCE_BREAK_PATTERN.finditer(text, desired_start, current_end):
+        candidate = _skip_inline_whitespace(text, match.end(), current_end)
+        if candidate < current_end:
+            return candidate
+    return None
+
+
+def _find_previous_sentence_start(text: str, current_start: int, desired_start: int, current_end: int) -> int | None:
+    matches = list(SENTENCE_BREAK_PATTERN.finditer(text, current_start, desired_start))
+    for match in reversed(matches):
+        candidate = _skip_inline_whitespace(text, match.end(), current_end)
+        if current_start < candidate < current_end:
+            return candidate
+    return None
+
+
+def _find_next_word_start(text: str, desired_start: int, current_end: int) -> int | None:
+    for index in range(desired_start, current_end):
+        if text[index].isspace():
+            candidate = _skip_inline_whitespace(text, index, current_end)
+            if candidate < current_end:
+                return candidate
+    return None
+
+
+def _skip_inline_whitespace(text: str, index: int, current_end: int) -> int:
+    while index < current_end and text[index].isspace():
+        index += 1
+    return index
 
 
 def process_wiki(file: Path) -> list[dict]:

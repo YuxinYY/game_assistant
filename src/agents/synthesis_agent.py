@@ -5,6 +5,7 @@ unsupported claims must be admitted as "不确定".
 """
 
 from pathlib import Path
+import re
 
 from src.agents.base_agent import BaseAgent, Tool
 from src.core.state import AgentState, Citation
@@ -24,6 +25,8 @@ WORKFLOW_PROMPT_FILES = {
         "navigation": "synthesis_navigation_en.txt",
     },
 }
+
+_EXCERPT_SENTENCE_BREAK_PATTERN = re.compile(r"[。！？.!?]")
 
 
 class SynthesisAgent(BaseAgent):
@@ -218,10 +221,31 @@ def _extract_citations(docs) -> list[Citation]:
             citations.append(Citation(
                 source=doc.source,
                 url=doc.url,
-                excerpt=doc.text[:120] + "…",
+                excerpt=_build_citation_excerpt(doc.text),
                 author=doc.metadata.get("author", ""),
             ))
     return citations
+
+
+def _build_citation_excerpt(text: str, max_chars: int = 160) -> str:
+    cleaned = " ".join(text.split())
+    if not cleaned:
+        return ""
+    if len(cleaned) <= max_chars:
+        return cleaned
+
+    sentence_breaks = [match.end() for match in _EXCERPT_SENTENCE_BREAK_PATTERN.finditer(cleaned[: max_chars + 1])]
+    if sentence_breaks:
+        candidate_end = sentence_breaks[-1]
+        if candidate_end >= max_chars // 2:
+            excerpt = cleaned[:candidate_end].rstrip()
+            return excerpt if candidate_end == len(cleaned) else f"{excerpt} …"
+
+    candidate = cleaned[:max_chars].rstrip()
+    last_space = candidate.rfind(" ")
+    if last_space >= max_chars // 2:
+        candidate = candidate[:last_space]
+    return candidate.rstrip(" ,;:") + "…"
 
 
 def _citation_key(source: str, url: str) -> tuple[str, str]:
