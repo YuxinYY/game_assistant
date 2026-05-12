@@ -7,6 +7,7 @@ import base64
 import json
 import os
 import time
+from collections.abc import Mapping
 from typing import Any
 
 import requests
@@ -20,6 +21,70 @@ try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - depends on local environment
     load_dotenv = None
+
+try:
+    import streamlit as st
+except ImportError:  # pragma: no cover - depends on local environment
+    st = None
+
+
+_STREAMLIT_SECRET_PATHS: dict[str, tuple[tuple[str, str], ...]] = {
+    "LLM_PROVIDER": (("llm", "provider"),),
+    "LLM_MODEL": (("llm", "model"),),
+    "VLM_PROVIDER": (("llm", "vision_provider"),),
+    "VLM_MODEL": (("llm", "vision_model"),),
+    "OPENAI_API_KEY": (("openai", "api_key"),),
+    "OPENAI_MODEL": (("openai", "model"),),
+    "GROQ_API_KEY": (("groq", "api_key"),),
+    "GROQ_MODEL": (("groq", "model"),),
+    "ANTHROPIC_API_KEY": (("anthropic", "api_key"),),
+}
+
+
+def _runtime_secret(key: str) -> str | None:
+    value = os.getenv(key)
+    if value not in (None, ""):
+        return value
+    if st is None:
+        return None
+    try:
+        secrets = st.secrets
+    except Exception:  # pragma: no cover - depends on runtime context
+        return None
+    value = _resolve_streamlit_secret_value(secrets, key)
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
+def _resolve_streamlit_secret_value(secrets: Any, key: str) -> Any:
+    for candidate in (key, key.lower()):
+        value = _mapping_get(secrets, candidate)
+        if value not in (None, ""):
+            return value
+
+    for section_name, field_name in _STREAMLIT_SECRET_PATHS.get(key, ()):
+        section = _mapping_get(secrets, section_name)
+        if not isinstance(section, Mapping):
+            continue
+        for candidate in (field_name, field_name.upper()):
+            value = _mapping_get(section, candidate)
+            if value not in (None, ""):
+                return value
+    return None
+
+
+def _mapping_get(container: Any, key: str) -> Any:
+    getter = getattr(container, "get", None)
+    if callable(getter):
+        try:
+            return getter(key)
+        except Exception:  # pragma: no cover - defensive
+            return None
+    try:
+        return container[key]
+    except Exception:  # pragma: no cover - defensive
+        return None
 
 
 class LLMClient:
@@ -148,53 +213,53 @@ class LLMClient:
         return self._client is not None
 
     def _resolve_provider(self, config: dict) -> str:
-        configured = os.getenv("LLM_PROVIDER") or config["llm"].get("provider")
+        configured = _runtime_secret("LLM_PROVIDER") or config["llm"].get("provider")
         if configured:
             return configured.strip().lower()
-        if os.getenv("ANTHROPIC_API_KEY"):
+        if _runtime_secret("ANTHROPIC_API_KEY"):
             return "anthropic"
-        if os.getenv("GROQ_API_KEY"):
+        if _runtime_secret("GROQ_API_KEY"):
             return "groq"
-        if os.getenv("OPENAI_API_KEY"):
+        if _runtime_secret("OPENAI_API_KEY"):
             return "openai"
         return "anthropic"
 
     def _resolve_model(self, config: dict, provider: str | None = None) -> str:
         provider_name = provider or self.provider
-        env_model = os.getenv("LLM_MODEL")
+        env_model = _runtime_secret("LLM_MODEL")
         if env_model:
             return env_model
         if provider_name == "groq":
-            return os.getenv("GROQ_MODEL") or config["llm"].get("groq_model") or "llama-3.1-8b-instant"
+            return _runtime_secret("GROQ_MODEL") or config["llm"].get("groq_model") or "llama-3.1-8b-instant"
         if provider_name == "openai":
-            return os.getenv("OPENAI_MODEL") or config["llm"].get("openai_model") or "gpt-4o-mini"
+            return _runtime_secret("OPENAI_MODEL") or config["llm"].get("openai_model") or "gpt-4o-mini"
         return config["llm"]["model"]
 
     def _resolve_api_key(self, provider: str) -> str:
         if provider == "groq":
-            return os.getenv("GROQ_API_KEY", "")
+            return _runtime_secret("GROQ_API_KEY") or ""
         if provider == "openai":
-            return os.getenv("OPENAI_API_KEY", "")
-        return os.getenv("ANTHROPIC_API_KEY", "")
+            return _runtime_secret("OPENAI_API_KEY") or ""
+        return _runtime_secret("ANTHROPIC_API_KEY") or ""
 
     def _resolve_vision_provider(self, config: dict) -> str:
-        configured = os.getenv("VLM_PROVIDER") or config["llm"].get("vision_provider")
+        configured = _runtime_secret("VLM_PROVIDER") or config["llm"].get("vision_provider")
         if configured:
             return configured.strip().lower()
         if self.provider == "anthropic":
             return "anthropic"
-        if os.getenv("ANTHROPIC_API_KEY"):
+        if _runtime_secret("ANTHROPIC_API_KEY"):
             return "anthropic"
         return self.provider
 
     def _resolve_vision_model(self, config: dict) -> str:
-        env_model = os.getenv("VLM_MODEL")
+        env_model = _runtime_secret("VLM_MODEL")
         if env_model:
             return env_model
         if self.vision_provider == self.provider:
             return self.model
         if self.vision_provider == "groq":
-            return os.getenv("GROQ_MODEL") or config["llm"].get("groq_model") or "llama-3.1-8b-instant"
+            return _runtime_secret("GROQ_MODEL") or config["llm"].get("groq_model") or "llama-3.1-8b-instant"
         return config["llm"].get("vision_model") or config["llm"].get("model") or self.model
 
     def _resolve_vision_client(self):
