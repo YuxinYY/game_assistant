@@ -5,11 +5,14 @@ unsupported claims must be admitted as "不确定".
 """
 
 from pathlib import Path
+from functools import lru_cache
 import re
 
 from src.agents.base_agent import BaseAgent, Tool
+from src.agents.profile_agent import CHAPTER_GATES
 from src.core.state import AgentState, Citation
 from src.llm.client import LLMClient
+from src.tools.profile_ops import load_knowledge_base
 from src.utils.language import wants_english
 
 
@@ -27,6 +30,21 @@ WORKFLOW_PROMPT_FILES = {
 }
 
 _EXCERPT_SENTENCE_BREAK_PATTERN = re.compile(r"[。！？.!?]")
+
+_ENGLISH_NAMED_OPTIONS = {
+    "Immobilize": ("spell", "定身术"),
+    "Rock Solid": ("spell", "铜头铁臂"),
+    "Cloud Step": ("spell", "聚形散气"),
+    "Red Tides": ("transformation", "Red Tides"),
+    "Azure Dust": ("transformation", "Azure Dust"),
+    "Ashen Slumber": ("transformation", "Ashen Slumber"),
+    "Hoarfrost": ("transformation", "Hoarfrost"),
+    "Umbral Abyss": ("transformation", "Umbral Abyss"),
+    "Golden Lining": ("transformation", "Golden Lining"),
+    "Violet Hail": ("transformation", "Violet Hail"),
+    "Ebon Flow": ("transformation", "Ebon Flow"),
+    "Dark Thunder": ("transformation", "Dark Thunder"),
+}
 
 
 class SynthesisAgent(BaseAgent):
@@ -173,11 +191,14 @@ def _build_synthesis_context(state: AgentState, language: str) -> str:
                     for c in conflicts
                 )
 
+    compatibility_text = _build_profile_compatibility_context(state, language, citation_index)
+
     if language == "en":
         return (
             f"Current workflow:\n{state.workflow or 'unknown'}\n\n"
             f"Player profile:\n{state.player_profile.to_context_string(language='en')}\n\n"
             f"User question:\n{state.user_query}\n\n"
+                f"Profile compatibility analysis:\n{compatibility_text}\n\n"
             f"Retrieved material:\n{docs_text}\n\n"
             f"Consensus:\n{consensus_text or 'None'}"
         )
@@ -186,9 +207,178 @@ def _build_synthesis_context(state: AgentState, language: str) -> str:
         f"当前 workflow:\n{state.workflow or 'unknown'}\n\n"
         f"玩家状态:\n{state.player_profile.to_context_string(language='zh')}\n\n"
         f"用户问题:\n{state.user_query}\n\n"
+            f"玩家当前可实现性分析:\n{compatibility_text}\n\n"
         f"检索到的内容:\n{docs_text}\n\n"
         f"共识分析:\n{consensus_text or '无'}"
     )
+
+
+@lru_cache(maxsize=1)
+def _profile_knowledge_base() -> dict[str, list[str]]:
+    return load_knowledge_base()
+
+
+def _build_profile_compatibility_context(
+    state: AgentState,
+    language: str,
+    citation_index: dict[tuple[str, str], int],
+) -> str:
+    notes = _collect_profile_compatibility_notes(state.retrieved_docs, state.player_profile, citation_index, language)
+    if language == "en":
+        header = [
+            f"- Skills explicitly declared: {'yes' if state.player_profile.skills_explicit else 'no'}",
+            f"- Spells explicitly declared: {'yes' if state.player_profile.spells_explicit else 'no'}",
+            f"- Transformations explicitly declared: {'yes' if state.player_profile.transformations_explicit else 'no'}",
+            "- Only treat a source suggestion as unavailable when it is chapter-gated or contradicted by an explicit unlocked list.",
+        ]
+        if not notes:
+            header.append("- No retrieved source recommendation is clearly blocked by the current profile.")
+            return "\n".join(header)
+        return "\n".join(header + notes)
+
+    header = [
+        f"- 技能列表是否明确给出：{'是' if state.player_profile.skills_explicit else '否'}",
+        f"- 法术列表是否明确给出：{'是' if state.player_profile.spells_explicit else '否'}",
+        f"- 变身列表是否明确给出：{'是' if state.player_profile.transformations_explicit else '否'}",
+        "- 只有在来源建议被章节门槛限制，或与你明确给出的已解锁列表冲突时，才能判定为当前不可用。",
+    ]
+    if not notes:
+        header.append("- 当前检索到的来源建议里，没有哪一条能被明确判定为你现在做不到。")
+        return "\n".join(header)
+    return "\n".join(header + notes)
+
+
+def _collect_profile_compatibility_notes(
+    docs,
+    profile,
+    citation_index: dict[tuple[str, str], int],
+    language: str,
+) -> list[str]:
+    notes: list[str] = []
+    seen: set[tuple[int, str, str]] = set()
+    for doc in docs:
+        doc_key = _citation_key(doc.source, doc.url)
+        source_number = citation_index.get(doc_key, 0)
+        for category, display_name, canonical_name, reason in _find_unavailable_doc_options(doc.text, profile):
+            note_key = (source_number, category, canonical_name)
+            if note_key in seen:
+                continue
+            seen.add(note_key)
+            notes.append(
+                _format_profile_compatibility_note(
+                    source_number,
+                    display_name,
+                    reason,
+                    category,
+                    profile,
+                    language=language,
+                )
+            )
+    return notes[:8]
+
+
+def _find_unavailable_doc_options(text: str, profile) -> list[tuple[str, str, str, str]]:
+    unavailable: list[tuple[str, str, str, str]] = []
+    for category, display_name, canonical_name in _extract_profile_option_mentions(text):
+        availability, reason = _assess_option_availability(category, canonical_name, profile)
+        if availability == "unavailable" and reason:
+            unavailable.append((category, display_name, canonical_name, reason))
+    return unavailable
+
+
+def _extract_profile_option_mentions(text: str) -> list[tuple[str, str, str]]:
+    kb = _profile_knowledge_base()
+    mentions: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for item in kb.get("all_skills_tree", []):
+        if item in text and ("skill", item) not in seen:
+            mentions.append(("skill", item, item))
+            seen.add(("skill", item))
+
+    for item in kb.get("all_spells", []):
+        if item in text and ("spell", item) not in seen:
+            mentions.append(("spell", item, item))
+            seen.add(("spell", item))
+
+    for english_name, (category, canonical_name) in _ENGLISH_NAMED_OPTIONS.items():
+        if english_name in text and (category, canonical_name) not in seen:
+            mentions.append((category, english_name, canonical_name))
+            seen.add((category, canonical_name))
+
+    for match in re.finditer(r"变身[:：]\s*([^\s，。,；;]+)", text):
+        transformation = match.group(1).strip()
+        if transformation and ("transformation", transformation) not in seen:
+            mentions.append(("transformation", transformation, transformation))
+            seen.add(("transformation", transformation))
+
+    return mentions
+
+
+def _assess_option_availability(category: str, option_name: str, profile) -> tuple[str, str]:
+    chapter_gate = CHAPTER_GATES.get(option_name)
+    if chapter_gate is not None and profile.chapter is not None and profile.chapter < chapter_gate:
+        return "unavailable", f"chapter_gate:{chapter_gate}"
+
+    if category == "skill":
+        if option_name in profile.unlocked_skills:
+            return "available", "owned"
+        if profile.skills_explicit:
+            return "unavailable", "missing_from_explicit_skill_list"
+        return "unknown", ""
+
+    if category == "spell":
+        if option_name in set(profile.unlocked_spells) | set(profile.equipped_spells):
+            return "available", "owned"
+        if profile.spells_explicit:
+            return "unavailable", "missing_from_explicit_spell_list"
+        return "unknown", ""
+
+    if category == "transformation":
+        if option_name in profile.unlocked_transformations:
+            return "available", "owned"
+        if profile.transformations_explicit:
+            return "unavailable", "missing_from_explicit_transformation_list"
+        return "unknown", ""
+
+    return "unknown", ""
+
+
+def _format_profile_compatibility_note(
+    source_number: int,
+    display_name: str,
+    reason: str,
+    category: str,
+    profile,
+    language: str,
+) -> str:
+    source_label_en = f"[Source {source_number}]" if source_number else "[Source]"
+    source_label_zh = f"[来源 {source_number}]" if source_number else "[来源]"
+
+    if reason.startswith("chapter_gate:"):
+        gate = reason.split(":", 1)[1]
+        if language == "en":
+            return f"- {source_label_en} {display_name}: unavailable now because it is gated until Chapter {gate}."
+        return f"- {source_label_zh} {display_name}：当前不可用，因为它至少要到第 {gate} 章。"
+
+    if reason == "missing_from_explicit_skill_list":
+        if language == "en":
+            return f"- {source_label_en} {display_name}: unavailable now because it is not in your declared unlocked skills."
+        return f"- {source_label_zh} {display_name}：当前不可用，因为它不在你明确给出的已解锁技能里。"
+
+    if reason == "missing_from_explicit_spell_list":
+        if language == "en":
+            return f"- {source_label_en} {display_name}: unavailable now because it is not in your declared unlocked spells."
+        return f"- {source_label_zh} {display_name}：当前不可用，因为它不在你明确给出的已解锁法术里。"
+
+    if reason == "missing_from_explicit_transformation_list":
+        if language == "en":
+            return f"- {source_label_en} {display_name}: unavailable now because it is not in your declared unlocked transformations."
+        return f"- {source_label_zh} {display_name}：当前不可用，因为它不在你明确给出的已解锁变身里。"
+
+    if language == "en":
+        return f"- {source_label_en} {display_name}: currently not usable for your build context."
+    return f"- {source_label_zh} {display_name}：当前不适用于你给出的 build 上下文。"
 
 
 def _resolve_synthesis_fallback_provider(config: dict, primary_provider: str) -> str:

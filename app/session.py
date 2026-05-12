@@ -71,6 +71,9 @@ def _has_any_profile_filter(profile: PlayerProfile) -> bool:
             bool(profile.unlocked_skills),
             bool(profile.unlocked_spells),
             bool(profile.unlocked_transformations),
+            profile.skills_explicit,
+            profile.spells_explicit,
+            profile.transformations_explicit,
         ]
     )
 
@@ -99,3 +102,6 @@ def _clear_profile_filters(profile: PlayerProfile) -> None:
     profile.unlocked_skills = []
     profile.unlocked_spells = []
     profile.unlocked_transformations = []
+    profile.skills_explicit = False
+    profile.spells_explicit = False
+    profile.transformations_explicit = False

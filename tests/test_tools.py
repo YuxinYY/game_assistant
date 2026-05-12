@@ -101,3 +101,20 @@ class TestProfileOps:
         )
         assert merged_profile.unlocked_skills == ["闪身", "识破"]
         assert updates[0]["field"] == "unlocked_skills"
+
+    def test_validate_normalizes_common_english_aliases(self):
+        validated = validate_extraction(
+            {
+                "unlocked_spells": ["Immobilize"],
+                "unlocked_skills": ["Rock Solid", "Cloud Step"],
+            },
+            {
+                "all_spells": ["定身术", "铜头铁臂", "聚形散气"],
+                "all_spirits": [],
+                "all_armors": [],
+                "all_skills_tree": ["定身术", "铜头铁臂", "聚形散气"],
+            },
+        )
+
+        assert validated["unlocked_spells"] == ["定身术"]
+        assert validated["unlocked_skills"] == ["铜头铁臂", "聚形散气"]

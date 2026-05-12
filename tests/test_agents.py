@@ -218,6 +218,43 @@ class TestProfileAgent:
         assert result.player_profile.equipped_armor == ["行者套装"]
         assert len(result.profile_updates) >= 3
 
+    def test_conversational_update_replaces_explicit_unlock_lists_from_text(self):
+        with patch("src.llm.client.LLMClient.__init__", return_value=None):
+            agent = ProfileAgent(
+                DUMMY_CONFIG,
+                vlm_client=object(),
+                knowledge_base={
+                    "all_spells": ["定身术", "铜头铁臂", "聚形散气"],
+                    "all_spirits": [],
+                    "all_armors": [],
+                    "all_skills_tree": ["闪身"],
+                },
+            )
+            state = AgentState(
+                user_query=(
+                    "I'm in Chapter 2 and running a spell build. "
+                    "Unlocked skills: 闪身. "
+                    "Unlocked spells: Immobilize. "
+                    "Unlocked transformations: none."
+                ),
+                player_profile=PlayerProfile(
+                    unlocked_skills=["旧技能"],
+                    unlocked_spells=["安身法"],
+                    unlocked_transformations=["Red Tides"],
+                ),
+            )
+
+            result = agent.execute(state)
+
+        assert result.player_profile.chapter == 2
+        assert result.player_profile.build == "spell"
+        assert result.player_profile.unlocked_skills == ["闪身"]
+        assert result.player_profile.unlocked_spells == ["定身术"]
+        assert result.player_profile.unlocked_transformations == []
+        assert result.player_profile.skills_explicit is True
+        assert result.player_profile.spells_explicit is True
+        assert result.player_profile.transformations_explicit is True
+
     def test_screenshot_flow_gracefully_skips_when_vision_unavailable(self):
         class NoVisionClient:
             def supports_vision(self):
@@ -552,6 +589,35 @@ class TestSynthesisAgent:
         assert "## 招式识别" in result.final_answer
         assert "## 参考来源" in result.final_answer
         assert len(result.citations) == 1
+
+    def test_build_synthesis_context_includes_unavailable_source_options(self):
+        docs = [
+            Document(
+                text="Use Immobilize to create an opening, then switch to Red Tides after the delayed slam.",
+                source="wiki",
+                url="http://wiki/tiger-build",
+                chapter=2,
+                entity="Tiger Vanguard",
+            )
+        ]
+        state = make_state("Which Tiger Vanguard plan fits my build?", chapter=2)
+        state.workflow = "boss_strategy"
+        state.player_profile = PlayerProfile(
+            chapter=2,
+            build="spell",
+            unlocked_spells=["定身术"],
+            unlocked_transformations=[],
+            spells_explicit=True,
+            transformations_explicit=True,
+        )
+        state.retrieved_docs = docs
+        state.citations = _extract_citations(docs)
+
+        context = _build_synthesis_context(state, language="en")
+
+        assert "Profile compatibility analysis:" in context
+        assert "Red Tides: unavailable now because it is not in your declared unlocked transformations." in context
+        assert "Immobilize: unavailable" not in context
 
     def test_no_results_answer_uses_targeted_next_step_hint_when_entity_is_missing(self):
         with patch("src.llm.client.LLMClient.__init__", return_value=None):

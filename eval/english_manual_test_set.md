@@ -127,6 +127,8 @@ This demonstrates observability and makes the multi-agent design legible to revi
 | E6 | I'm in Chapter 2 and running a spell build. How should I approach Tiger Vanguard? | Text-based profile update, personalization, spoiler guard | boss_strategy | The answer should reflect Chapter 2 and a spell-oriented setup. It should avoid recommending clearly later-game locked content. This is a good question to confirm ProfileAgent is actually influencing downstream behavior. |
 | E7 | Can I use staff parry against Tiger Vanguard's charge slash, or is dodging more reliable? | Conflict detection, consensus handling | boss_strategy | If sources disagree, the answer should surface that disagreement instead of pretending there is one perfect answer. A visible consensus/conflict signal is a strong pass. |
 | E8 | What exact punish window, in seconds, do I get after Tiger Vanguard's delayed slam? | Honest uncertainty, non-fabrication under thin evidence | boss_strategy | If the corpus does not support an exact time value, the answer should say so clearly and fall back to grounded qualitative guidance. A precise unsupported number would be a fail. |
+| E9 | I'm in Chapter 2 on a spell build. Unlocked skills: none. Unlocked spells: Immobilize. Unlocked transformations: none. Which Tiger Vanguard advice from the sources can I actually use right now, and which options are unavailable? | Explicit unlock-list parsing, profile-aware feasibility analysis | boss_strategy | The answer should keep grounded dodge and Immobilize advice, and explicitly call out source suggestions like Red Tides or other undeclared transformations as unavailable instead of blending them into the usable plan. |
+| E10 | My build is spell. Unlocked skills: none. Unlocked spells: Immobilize. Unlocked transformations: Red Tides. Based on the cited strategies, separate what fits my current setup from what still does not. | Source-level recommendation separation, avoid over-blocking available tools | boss_strategy | The answer should not wrongly mark Red Tides as unavailable once it is explicitly listed, but it should still separate any other unsupported source recommendations if they appear. |
 
 ## Why These Questions Cover The Implemented Design
 
@@ -138,6 +140,7 @@ This set is intentionally mixed across workflows and evidence shapes.
 - E5 tests decision-making rather than pure fact answering.
 - E6 tests whether player profile information can actually change the final recommendation.
 - E8 tests whether the system stays honest when the retrieval evidence is not strong enough for an exact claim.
+- E9 and E10 test whether explicit unlocked lists from the query can change which cited strategies are presented as usable versus unavailable.
 
 ## Strong Demo Outcome
 

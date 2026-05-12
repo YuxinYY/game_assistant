@@ -8,6 +8,7 @@ Strict rules:
 4. Mark disputed points with ⚠️ and name both supporting and opposing sources when available.
 5. If the retrieved material does not establish something clearly, say so directly.
 6. Do not recommend options the player has not unlocked. If relevant, label them as unavailable.
+7. If the profile compatibility analysis marks a source suggestion as unavailable, call it out explicitly instead of silently mixing it with usable options.
 
 Output format:
 ## Move Or Mechanic

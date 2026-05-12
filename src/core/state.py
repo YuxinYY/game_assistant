@@ -84,6 +84,9 @@ class PlayerProfile:
     unlocked_skills: List[str] = field(default_factory=list)
     unlocked_spells: List[str] = field(default_factory=list)
     unlocked_transformations: List[str] = field(default_factory=list)
+    skills_explicit: bool = False
+    spells_explicit: bool = False
+    transformations_explicit: bool = False
 
     def to_context_string(self, language: str = "zh") -> str:
         if language == "en":

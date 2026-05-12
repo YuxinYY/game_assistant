@@ -34,11 +34,68 @@ PROFILE_SIGNAL_KEYWORDS = (
     "截图里",
     "识别错",
     "纠正",
+    "已解锁",
+    "当前技能",
+    "当前法术",
+    "当前变身",
+    "unlocked skills",
+    "unlocked spells",
+    "unlocked transformations",
+    "unlocked transformers",
+    "my skills",
+    "my spells",
+    "my transformations",
+    "my build",
+    "i use",
+    "i'm using",
+    "i am using",
+    "i have unlocked",
+)
+
+PROFILE_SIGNAL_PATTERNS = (
+    re.compile(r"\bchapter\s*[1-6]\b", re.IGNORECASE),
+    re.compile(r"\b(?:dodge|parry|spell|hybrid)\s+build\b", re.IGNORECASE),
+    re.compile(r"\b(?:skills?|spells?|transformations?|transformers?)\s*:", re.IGNORECASE),
+    re.compile(r"(?:已解锁|当前|目前).{0,4}(?:技能|法术|变身|化身)", re.IGNORECASE),
+)
+
+_EXPLICIT_LIST_FLAG_FIELDS = {
+    "unlocked_skills": "skills_explicit",
+    "unlocked_spells": "spells_explicit",
+    "unlocked_transformations": "transformations_explicit",
+}
+
+_BUILD_PATTERNS = (
+    (re.compile(r"\b(?:dodge|evasive?)\s+build\b", re.IGNORECASE), "dodge"),
+    (re.compile(r"\bparry\s+build\b", re.IGNORECASE), "parry"),
+    (re.compile(r"\bspell\s+build\b", re.IGNORECASE), "spell"),
+    (re.compile(r"\bhybrid\s+build\b", re.IGNORECASE), "hybrid"),
+)
+
+_SKILL_SECTION_PATTERNS = (
+    re.compile(r"(?:已解锁(?:的)?|当前(?:的)?|目前(?:的)?|现在(?:的)?)?技能(?:点)?(?:有|是|为|都在|点了)?\s*[:：]?\s*([^\n。！？!?;；]+)", re.IGNORECASE),
+    re.compile(r"(?:unlocked|current(?:ly)?(?:\s+unlocked)?|my)\s+skills?\s*(?:are|:|=)\s*([^\n.!?;]+)", re.IGNORECASE),
+    re.compile(r"(?:i have|i've)\s+(?:currently\s+)?(?:unlocked\s+)?skills?\s*(?:are|:|=)\s*([^\n.!?;]+)", re.IGNORECASE),
+)
+
+_SPELL_SECTION_PATTERNS = (
+    re.compile(r"(?:已解锁(?:的)?|当前(?:的)?|目前(?:的)?|现在(?:的)?)?法术(?:有|是|为)?\s*[:：]?\s*([^\n。！？!?;；]+)", re.IGNORECASE),
+    re.compile(r"(?:unlocked|current(?:ly)?(?:\s+unlocked)?|my)\s+spells?\s*(?:are|:|=)\s*([^\n.!?;]+)", re.IGNORECASE),
+    re.compile(r"(?:i have|i've)\s+(?:currently\s+)?(?:unlocked\s+)?spells?\s*(?:are|:|=)\s*([^\n.!?;]+)", re.IGNORECASE),
+)
+
+_TRANSFORMATION_SECTION_PATTERNS = (
+    re.compile(r"(?:已解锁(?:的)?|当前(?:的)?|目前(?:的)?|现在(?:的)?)?(?:变身|化身)(?:有|是|为)?\s*[:：]?\s*([^\n。！？!?;；]+)", re.IGNORECASE),
+    re.compile(r"(?:unlocked|current(?:ly)?(?:\s+unlocked)?|my)\s+(?:transformations?|transformers?)\s*(?:are|:|=)\s*([^\n.!?;]+)", re.IGNORECASE),
+    re.compile(r"(?:i have|i've)\s+(?:currently\s+)?(?:unlocked\s+)?(?:transformations?|transformers?)\s*(?:are|:|=)\s*([^\n.!?;]+)", re.IGNORECASE),
 )
 
 
 def has_profile_signal_in_text(text: str) -> bool:
-    return any(keyword in (text or "") for keyword in PROFILE_SIGNAL_KEYWORDS)
+    content = text or ""
+    return any(keyword in content for keyword in PROFILE_SIGNAL_KEYWORDS) or any(
+        pattern.search(content) for pattern in PROFILE_SIGNAL_PATTERNS
+    )
 
 
 # Chapter gates: which chapter unlocks each item
@@ -242,7 +299,7 @@ class ProfileAgent(BaseAgent):
         }
 
     def _handle_conversational_update(self, state: AgentState) -> AgentState:
-        extracted = self._extract_profile_from_text(state.user_query)
+        extracted, explicit_fields = self._extract_profile_from_text(state.user_query)
         if not extracted:
             self._trace(
                 state,
@@ -257,31 +314,51 @@ class ProfileAgent(BaseAgent):
             return state
 
         validated = validate_extraction(extracted, self.kb)
+        merge_payload = {
+            key: value
+            for key, value in validated.items()
+            if key not in explicit_fields
+        }
         state.player_profile, updates = merge_to_profile(
-            validated,
+            merge_payload,
             state.player_profile,
             source="conversation",
+        )
+        updates.extend(
+            self._apply_explicit_list_updates(
+                state.player_profile,
+                validated,
+                explicit_fields,
+            )
         )
         state.profile_updates = updates
         self._trace(
             state,
             0,
             "profile_text_update",
-            str({"raw": extracted, "validated": validated, "updates": updates}),
+            str({"raw": extracted, "validated": validated, "explicit_fields": sorted(explicit_fields), "updates": updates}),
         )
         return state
 
     def _has_profile_signal_in_text(self, text: str) -> bool:
         return has_profile_signal_in_text(text)
 
-    def _extract_profile_from_text(self, text: str) -> dict[str, Any]:
+    def _extract_profile_from_text(self, text: str) -> tuple[dict[str, Any], set[str]]:
         extracted: dict[str, Any] = {}
+        explicit_fields: set[str] = set()
 
-        chapter_match = re.search(r"第\s*([1-6])\s*章", text)
+        text = text or ""
+        lowered = text.casefold()
+
+        chapter_match = re.search(r"第\s*([1-6])\s*章", text) or re.search(r"\bchapter\s*([1-6])\b", text, re.IGNORECASE)
         if chapter_match:
             extracted["chapter"] = int(chapter_match.group(1))
 
-        staff_match = re.search(r"棍法\s*(?:等级|lv\.?|LV\.?)?\s*([1-5])", text)
+        staff_match = re.search(r"棍法\s*(?:等级|lv\.?|LV\.?)?\s*([1-5])", text) or re.search(
+            r"\b(?:staff(?:\s+level)?|staff\s*lv\.?|stance\s*lv\.?)\s*([1-5])\b",
+            text,
+            re.IGNORECASE,
+        )
         if staff_match:
             extracted["staff_level"] = int(staff_match.group(1))
 
@@ -293,29 +370,79 @@ class ProfileAgent(BaseAgent):
             extracted["build"] = "spell"
         elif "混合流" in text:
             extracted["build"] = "hybrid"
+        else:
+            for pattern, build in _BUILD_PATTERNS:
+                if pattern.search(text):
+                    extracted["build"] = build
+                    break
+
+        explicit_skills = _extract_labeled_items(text, _SKILL_SECTION_PATTERNS)
+        if explicit_skills is not None:
+            extracted["unlocked_skills"] = explicit_skills
+            explicit_fields.add("unlocked_skills")
+
+        explicit_spells = _extract_labeled_items(text, _SPELL_SECTION_PATTERNS)
+        if explicit_spells is not None:
+            extracted["unlocked_spells"] = explicit_spells
+            explicit_fields.add("unlocked_spells")
+
+        explicit_transformations = _extract_labeled_items(text, _TRANSFORMATION_SECTION_PATTERNS)
+        if explicit_transformations is not None:
+            extracted["unlocked_transformations"] = explicit_transformations
+            explicit_fields.add("unlocked_transformations")
 
         for spirit in self.kb.get("all_spirits", []):
             if f"没装备{spirit}" in text or f"不是{spirit}" in text:
                 if extracted.get("equipped_spirit") == spirit:
                     extracted.pop("equipped_spirit", None)
                 continue
-            if spirit in text and any(token in text for token in ["装备", "带的是", "带了", "用的是"]):
+            if spirit in text and any(token in lowered for token in ["装备", "带的是", "带了", "用的是", "equipped", "using", "i use", "i'm using"]):
                 extracted["equipped_spirit"] = spirit
 
         spells = [spell for spell in self.kb.get("all_spells", []) if spell in text]
-        if spells:
+        if spells and any(token in lowered for token in ["用的是", "带的是", "带了", "装备法术", "法术是", "using", "i use", "i'm using", "equipped spell"]):
             extracted["equipped_spells"] = spells
-            extracted["unlocked_spells"] = spells
+            if "unlocked_spells" not in explicit_fields:
+                extracted["unlocked_spells"] = spells
 
         skills = [skill for skill in self.kb.get("all_skills_tree", []) if skill in text]
-        if skills:
+        if skills and "unlocked_skills" not in explicit_fields and any(
+            token in lowered for token in ["技能", "技能点", "点了", "加点", "skills", "skill points"]
+        ):
             extracted["unlocked_skills"] = skills
 
         armors = [armor for armor in self.kb.get("all_armors", []) if armor in text]
-        if armors:
+        if armors and any(token in lowered for token in ["装备", "带的是", "穿的是", "armor", "equipped"]):
             extracted["equipped_armor"] = armors
 
-        return extracted
+        return extracted, explicit_fields
+
+    def _apply_explicit_list_updates(
+        self,
+        profile,
+        validated: dict[str, Any],
+        explicit_fields: set[str],
+    ) -> list[dict[str, Any]]:
+        updates: list[dict[str, Any]] = []
+        for field in sorted(explicit_fields):
+            new_value = list(validated.get(field, []))
+            old_value = list(getattr(profile, field, []) or [])
+            flag_field = _EXPLICIT_LIST_FLAG_FIELDS.get(field)
+            if flag_field:
+                setattr(profile, flag_field, True)
+            if old_value == new_value:
+                continue
+            setattr(profile, field, new_value)
+            updates.append(
+                {
+                    "field": field,
+                    "old_value": old_value,
+                    "new_value": new_value,
+                    "source": "conversation",
+                    "confidence": validated.get("confidence"),
+                }
+            )
+        return updates
 
     def _resolve_screenshot_entity(self, payload: dict[str, Any]) -> str:
         if not isinstance(payload, dict):
@@ -387,3 +514,24 @@ def _merge_entities(existing: list[str], new_entities: list[str]) -> list[str]:
         if entity and entity not in merged:
             merged.append(entity)
     return merged
+
+
+def _extract_labeled_items(text: str, patterns: tuple[re.Pattern[str], ...]) -> list[str] | None:
+    for pattern in patterns:
+        match = pattern.search(text or "")
+        if not match:
+            continue
+        return _parse_profile_list_segment(match.group(1))
+    return None
+
+
+def _parse_profile_list_segment(segment: str) -> list[str]:
+    cleaned = (segment or "").strip().strip("。.!?；;，,")
+    if not cleaned:
+        return []
+    if re.fullmatch(r"(?:none|no(?:ne)?|n/?a|无|没有|暂无|未解锁|空)", cleaned, re.IGNORECASE):
+        return []
+    normalized = re.sub(r"\b(?:and|only|just|currently)\b", ",", cleaned, flags=re.IGNORECASE)
+    normalized = normalized.replace("以及", ",").replace("和", ",")
+    values = [part.strip().strip("。.!?；;，,") for part in re.split(r"[,，、/；;]", normalized)]
+    return [value for value in values if value]

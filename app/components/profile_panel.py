@@ -67,6 +67,9 @@ def render_profile_panel():
             unlocked_skills=[s.strip() for s in skills_input.split(",") if s.strip()],
             unlocked_spells=[s.strip() for s in spells_input.split(",") if s.strip()],
             unlocked_transformations=[s.strip() for s in transforms_input.split(",") if s.strip()],
+            skills_explicit=True,
+            spells_explicit=True,
+            transformations_explicit=True,
         )
         st.sidebar.success("Profile updated")
 
@@ -81,6 +84,9 @@ def render_profile_panel():
             unlocked_skills=[],
             unlocked_spells=[],
             unlocked_transformations=[],
+            skills_explicit=False,
+            spells_explicit=False,
+            transformations_explicit=False,
         )
         st.sidebar.success("Filters cleared")
 

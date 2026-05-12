@@ -11,6 +11,22 @@ from typing import Any
 
 from src.core.state import PlayerProfile
 
+
+VALUE_ALIASES = {
+    "all_spells": {
+        "immobilize": "定身术",
+        "rock solid": "铜头铁臂",
+        "ring of fire": "安身法",
+        "cloud step": "聚形散气",
+    },
+    "all_skills_tree": {
+        "immobilize": "定身术",
+        "rock solid": "铜头铁臂",
+        "ring of fire": "安身法",
+        "cloud step": "聚形散气",
+    },
+}
+
 KB_FILES = {
     "all_spells": "all_spells.json",
     "all_spirits": "all_spirits.json",
@@ -80,11 +96,11 @@ def validate_extraction(raw_extraction: dict[str, Any], kb: dict[str, list[str]]
     if build is not None and build not in {"dodge", "parry", "spell", "hybrid"}:
         validated.pop("build", None)
 
-    _validate_list(validated, "unlocked_spells", set(kb.get("all_spells", [])))
-    _validate_list(validated, "equipped_spells", set(kb.get("all_spells", [])))
+    _validate_list(validated, "unlocked_spells", set(kb.get("all_spells", [])), VALUE_ALIASES.get("all_spells", {}))
+    _validate_list(validated, "equipped_spells", set(kb.get("all_spells", [])), VALUE_ALIASES.get("all_spells", {}))
     _validate_scalar(validated, "equipped_spirit", set(kb.get("all_spirits", [])))
     _validate_list(validated, "equipped_armor", set(kb.get("all_armors", [])))
-    _validate_list(validated, "unlocked_skills", set(kb.get("all_skills_tree", [])))
+    _validate_list(validated, "unlocked_skills", set(kb.get("all_skills_tree", [])), VALUE_ALIASES.get("all_skills_tree", {}))
 
     return validated
 
@@ -126,14 +142,25 @@ def merge_to_profile(
     return current_profile, updates
 
 
-def _validate_list(payload: dict[str, Any], field: str, allowed_values: set[str]) -> None:
+def _validate_list(
+    payload: dict[str, Any],
+    field: str,
+    allowed_values: set[str],
+    aliases: dict[str, str] | None = None,
+) -> None:
     values = payload.get(field)
     if values is None:
         return
     if not isinstance(values, list):
         payload.pop(field, None)
         return
-    normalized = [value for value in values if isinstance(value, str) and value.strip()]
+    normalized = []
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        normalized_value = _normalize_alias(value, aliases)
+        if normalized_value:
+            normalized.append(normalized_value)
     if allowed_values:
         normalized = [value for value in normalized if value in allowed_values]
     payload[field] = _merge_unique([], normalized)
@@ -148,6 +175,15 @@ def _validate_scalar(payload: dict[str, Any], field: str, allowed_values: set[st
         return
     if allowed_values and value not in allowed_values:
         payload.pop(field, None)
+
+
+def _normalize_alias(value: str, aliases: dict[str, str] | None) -> str:
+    stripped = value.strip()
+    if not stripped:
+        return ""
+    if not aliases:
+        return stripped
+    return aliases.get(stripped.casefold(), stripped)
 
 
 def _merge_unique(existing: list[str], incoming: list[str]) -> list[str]:
